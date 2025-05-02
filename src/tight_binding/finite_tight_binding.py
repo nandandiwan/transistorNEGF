@@ -1,5 +1,5 @@
-import unit_cell_generation as unit_cell
-import tight_binding_params as tbp
+import tight_binding.unit_cell_generation as unit_cell
+import tight_binding.tight_binding_params as tbp
 import numpy as np
 import numpy as np
 import scipy.constants as spc
@@ -121,7 +121,7 @@ class TightBindingHamiltonian:
         return (k_frac + delta) % 1.0
 
     #  effective-mass tensor around the CBM
-    def find_effective_mass(self, k_min_frac, Nk_coarse, band_idx,
+    def effective_mass_helper(self, k_min_frac, Nk_coarse, band_idx,
                             resolution_factor=4, a=5.431e-10):
 
 
@@ -167,7 +167,7 @@ class TightBindingHamiltonian:
         return mstar_me, prin_m, prin_axes
 
 
-    def scan_full_BZ(self, Nk=20, store_all=True, n_jobs=None, a=5.431e-10,
+    def effectiveMass(self, Nk=20, store_all=True, n_jobs=None, a=5.431e-10,
                     res_factor=4):
         """
         Nk       : number of k-points per reciprocal-lattice axis (Nk³ total)
@@ -206,7 +206,7 @@ class TightBindingHamiltonian:
         
         Egap = cbm_E - vbm_E
         self.gap = Egap
-        mstar, prin_m, prin_ax = self.find_effective_mass(cbm_data[1], Nk,
+        mstar, prin_m, prin_ax = self.effective_mass_helper(cbm_data[1], Nk,
                                                     cbm_data[2],
                                                     resolution_factor=res_factor,
                                                     a=a)
