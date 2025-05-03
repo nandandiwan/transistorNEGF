@@ -38,6 +38,7 @@ class UnitCellGeneration:
     
 
     def __init__(self, N):
+        #print(N)
         self.atoms = {}      # basic graph design 
         self.visited = set() # dfs
         self.N = N
@@ -184,12 +185,12 @@ class UnitCellGeneration:
 
         return missing     
     
-    
     def create_linear_potential(self, V):
         linear_potential = lambda i, V : i / (self.N) * V
+        #print(self.N)
         potential = np.array([linear_potential(i, V) for i in range(self.N * 4 + 1)])
+        #print(potential)
         return potential
-    
     # OLD
     
     def determine_hybridization(signs):
@@ -219,5 +220,4 @@ class UnitCellGeneration:
             s += f"{atom} -> {neighbors}" + "\n"
             
         return s
-    
     
