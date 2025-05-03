@@ -1,10 +1,10 @@
 import numpy as np
-
 class Atom:
     def __init__(self, x, y, z):
         self.x = x
         self.y = y
         self.z = z
+  
 
     def __eq__(self, other):
         if isinstance(other, Atom):
@@ -45,6 +45,9 @@ class UnitCellGeneration:
         self.addAtoms(Atom(0, 0, 0), 0)
         self.periodicityFix = {}
         self.atoms_nonPeriodic = self.atoms.copy()
+        
+        self.hydrogens = {}
+        self.numHydrogens = 0
 
         for atom in self.atoms:
             
@@ -66,6 +69,8 @@ class UnitCellGeneration:
             
 
             self.atoms[atom] = list(filter(self.checkIfAllowed, self.atoms[atom]))
+            
+            self.hydrogen_passification()
             
 
 
@@ -140,8 +145,26 @@ class UnitCellGeneration:
         
         return neighborInformation
     
+    def hydrogen_passification(self):
+        # we need to give each hydrogen an index 
+        hydrogenIndex = 0
+        for atom in self.atoms:
+            missing = self.dangling_bonds(atom, only_z=True)
+            for hydrogen_ in missing:
+                #print(f"silicon atom is: {atom} hydrogen atom is {hydrogen_}")
+                
+                hydrogen = Atom(hydrogen_[0] + atom.x, hydrogen_[1]+ atom.y, hydrogen_[2] + + atom.z)
+                dx,dy,dz = hydrogen_
+                norm = np.sqrt(dx**2 + dy**2 + dz**2)
+                l = dx / norm
+                m = dy / norm
+                n = dz / norm
+                self.hydrogens[hydrogen] = [atom, hydrogen_, hydrogenIndex, l,m,n]
+                hydrogenIndex += 1
+                
+                
     
-    def dangling_bonds(self, atom):
+    def dangling_bonds(self, atom, only_z= False):
         """
         Return the list of bond-direction vectors that *should* exist for
         `atom` but do not (because the neighbour lies outside the slab).
@@ -154,12 +177,20 @@ class UnitCellGeneration:
             if nz < 0 or nz >= self.N:
                 missing.append((dx, dy, dz))
                 continue
-
-            n_atom = Atom(nx % 1, ny % 1, nz)   # wrap in x, y (periodic)
-            if n_atom not in self.atoms:        
-                missing.append((dx, dy, dz))
+            if only_z == False:
+                n_atom = Atom(nx % 1, ny % 1, nz)   # wrap in x, y (periodic)
+                if n_atom not in self.atoms:        
+                    missing.append((dx, dy, dz))
 
         return missing     
+    
+    
+    def create_linear_potential(self, V):
+        linear_potential = lambda i, V : i / (self.N) * V
+        potential = np.array([linear_potential(i, V) for i in range(self.N * 4 + 1)])
+        return potential
+    
+    # OLD
     
     def determine_hybridization(signs):
         # Extract just the signs
@@ -185,4 +216,8 @@ class UnitCellGeneration:
     def __str__(self):
         s = ""
         for atom, neighbors in self.atoms.items():
-            s += "f{atom} -> {neighbors}" + "\n"
+            s += f"{atom} -> {neighbors}" + "\n"
+            
+        return s
+    
+    

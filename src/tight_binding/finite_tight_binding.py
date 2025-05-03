@@ -11,9 +11,8 @@ class TightBindingHamiltonian:
     def __init__(self, N):
         self.H = None
         self.N = None
-        self.potentialProfile = np.zeros(N+1)
         self.unitCell = unit_cell.UnitCellGeneration(N)
-        
+        self.potentialProfile = self.unitCell.create_linear_potential(0)
         self.U_orb_to_sp3 = 0.5*np.array([[1, 1, 1, 1],
                              [1, 1,-1,-1],
                              [1,-1, 1,-1],
@@ -68,9 +67,9 @@ class TightBindingHamiltonian:
                 for orbitalIndex, orbital in enumerate(orbitals):
                     index_i = atom_index * numOrbitals + orbitalIndex
                     
-                    effectiveZinPotential = int(atom.z)
+                    #effectiveZinPotential = int(atom.z * 4)
                     
-                    A[index_i,index_i] += potentialProfile[effectiveZinPotential]
+                    #A[index_i,index_i] += potentialProfile[effectiveZinPotential]
                     
                     for neighbor in neighbors.keys():
                         delta = neighbors[neighbor][0]
@@ -99,7 +98,11 @@ class TightBindingHamiltonian:
         eigvals,eigv = np.linalg.eigh(A)
         return eigvals
     
-
+    def setLinearPotential(self, V):
+        self.potentialProfile = self.unitCell.create_linear_potential(V)
+    
+    def setGeneralPotential(self, newPotentialProfile):
+        self.potentialProfile = newPotentialProfile
 
     # create the k grid 
     def make_mp_grid(self,Nk):
