@@ -1,11 +1,13 @@
-import tight_binding.unit_cell_generation as unit_cell
-import tight_binding.tight_binding_params as tbp
+import unit_cell_generation as unit_cell
+import tight_binding_params as tbp
 import numpy as np
 import numpy as np
 import scipy.constants as spc
 from itertools import product
 from multiprocessing import Pool, cpu_count
-
+import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 
 class TightBindingHamiltonian:
     def __init__(self, N):
@@ -37,8 +39,6 @@ class TightBindingHamiltonian:
     def create_tight_binding(self, k, N=1, potentialProfile = None):
     
         kx,ky = k
-        
-        
         
         unitCell = self.unitCell
         if potentialProfile is None:
@@ -147,6 +147,87 @@ class TightBindingHamiltonian:
         eigvals,eigv = np.linalg.eigh(A)
         return eigvals, A
     
+
+    def create_tight_binding_sparse(self, k, N=1, potentialProfile=None, sigma=0.5, eigRange=10):
+        kx,ky = k
+        
+        #print(N)
+        
+        unitCell = self.unitCell
+        if potentialProfile is None:
+            potentialProfile = unitCell.create_linear_potential(0)
+        unitNeighbors = unitCell.neighborTable()
+        hydrogens = unitCell.hydrogens
+        
+        
+        
+        numSilicon = len(unitNeighbors.keys())
+        numHydrogen = len(hydrogens.keys()) 
+    
+        orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
+        numOrbitals = len(orbitals)
+        size = numSilicon * numOrbitals + numHydrogen * 0
+        A = np.zeros((size, size), dtype=complex)    
+        
+        atomToIndex = {}
+        indexToAtom = {}
+        for atom_index,atom in enumerate(unitNeighbors):
+            atomToIndex[atom] = atom_index
+            indexToAtom[atom_index] = atom
+
+        rows, cols, data = [], [], []                   # <-- sparse triplets
+
+        # helper -----------------------------------------------------------
+        def add(i, j, val):
+            if val != 0.0:
+                rows.append(i); cols.append(j); data.append(val)
+                if i != j:                              # Hermitian
+                    rows.append(j); cols.append(i); data.append(np.conj(val))
+        # ------------------------------------------------------------------
+
+        # ---------- on‑site (Si) ----------
+        
+        for atom_idx, atom in indexToAtom.items():
+            hybridizationMatrix = self.H_sp3_explicit.copy() 
+
+            for delta in unitCell.dangling_bonds(atom):
+                signs = np.array([1/4] + list(delta)) * 4
+                h = unit_cell.UnitCellGeneration.determine_hybridization(signs)
+                hybridizationMatrix[h, h] += tbp.E['sp3']          # increase the energy of dangling states 
+        
+            # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
+            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T # go back to orbital basis 
+            base = atom_idx * numOrbitals
+            for i in range(4):
+                for j in range(i ,4):
+                    add(base + i, base + j, onsiteMatrix[i,j])
+            for p in range(4, 9):                       # five d’s
+                add(base + p, base + p, tbp.E['dxy'])
+            add(base + 9, base + 9, tbp.E['s*'])
+            
+        for atom_index, atom in indexToAtom.items():
+            base_i = atom_index * numOrbitals
+            for neighbor, (delta, l, m, n) in unitNeighbors[atom].items():
+
+                j = atomToIndex[neighbor]
+                if j < atom_index:              # upper‑triangle filter
+                    continue                    # let add() mirror it
+
+                phase = np.exp(2j*np.pi*(kx*delta[0] + ky*delta[1]))
+
+                for o1, orb1 in enumerate(orbitals):
+                    for o2, orb2 in enumerate(orbitals):
+                        hop = tbp.SK[(orb1, orb2)](l, m, n, tbp.V) * phase
+                        add(base_i + o1, j*numOrbitals + o2, hop)
+
+                
+    
+        H = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsr()
+        eigvals, eigvecs = spla.eigsh(H, k=eigRange,
+                                sigma=sigma, which='LM', tol=1e-6)
+
+
+        return eigvals, H
 
     # create the k grid
     def make_mp_grid(self,Nk):
