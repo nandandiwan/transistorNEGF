@@ -1,5 +1,6 @@
 import unit_cell_generation as unit_cell
 import tight_binding_params as tbp
+from tight_binding_params import E
 import numpy as np
 import numpy as np
 import scipy.constants as spc
@@ -18,7 +19,7 @@ class TightBindingHamiltonian:
                              [1, 1,-1,-1],
                              [1,-1, 1,-1],
                              [1,-1,-1, 1]])
-        Es = tbp.E['s']
+        """Es = tbp.E['s']
         Ep = tbp.E['px'] 
         
         H_orb = np.diag([Es, Ep, Ep, Ep])
@@ -34,8 +35,66 @@ class TightBindingHamiltonian:
         b = (Es -   Ep)/4.0
         H_sp3_explicit = np.full((4,4), b)
         np.fill_diagonal(H_sp3_explicit, a)
-        self.H_sp3_explicit = H_sp3_explicit
-            
+        self.H_sp3_explicit = H_sp3_explicit"""
+        
+        
+        cob = 0.5*np.array([[1, 1, 1, 1],
+                                [1, 1,-1,-1],
+                                [1,-1, 1,-1],
+                                [1,-1,-1, 1]])
+        cob = cob.T  
+        self.cob = cob
+
+        self.newOrbitals = ['s', 'x1', 'x2', 'x3']
+        self.translation = {'s':('s'), 'x1' : ('px', 'dxy'), 'x2': ('py', 'dyz'), 'x3': ('pz', 'dzx')}
+        orbitalMatrix = np.diag(np.array([E['s'],  E['px'] + E['dxy'], E['px'] +  E['dxy'], E['px'] +  E['dxy']]))
+
+        Es = E['s']
+        Ep = E['px']
+        Ed = E['dxy']
+        alpha = np.sqrt(Ep  / (Ep + Ed))
+        beta = np.sqrt(Ed  / (Ep + Ed)) 
+        cont1 = 1
+        cont2 = 0
+ 
+        self.factor = {'s': 1, 'px':alpha, 'py':alpha, 'pz':alpha, 'dxy':beta,'dyz':beta,'dzx':beta}
+        self.factor2 = {'s': 1, 'px':cont1, 'py':cont1, 'pz':cont1, 'dxy':cont2,'dyz':cont2,'dzx':cont2}
+        orbitalDangling = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx']
+
+        self.orbToIndex= {}
+        for oa, orb in enumerate(orbitalDangling):
+            self.orbToIndex[orb] = oa
+        self.hybridizationMatrix = cob.T @ orbitalMatrix @ cob
+
+        
+        
+    def danglingBonds(self, modifiedMatrix):
+
+        newOrb = np.zeros((7,7))
+        newOrbitals= self.newOrbitals
+        translation = self.translation
+        orbToIndex = self.orbToIndex
+        factor = self.factor
+        factor2 = self.factor2
+        for o1, orb1 in enumerate(newOrbitals):
+            for o2, orb2 in enumerate(newOrbitals):
+                value = modifiedMatrix[o1, o2]
+                m1 = translation[orb1]
+                m2 = translation[orb2]
+                
+                if len(m1) == 1 and m1 == m2:
+                    newOrb[orbToIndex[m1[0]], orbToIndex[m2[0]]] = value*factor[m1[0]] * factor[m2[0]]
+                    
+                elif len(m1) == 2 and m1 == m2:
+                    newOrb[orbToIndex[m1[0]], orbToIndex[m2[0]]] = value*factor[m1[0]] * factor[m2[0]]
+                    newOrb[orbToIndex[m1[1]], orbToIndex[m2[1]]] = value*factor[m1[1]] * factor[m2[1]]    
+                else:
+                    for o3 in m1:
+                        for o4 in m2:  
+                            newOrb[orbToIndex[o3], orbToIndex[o4]] = value*factor[o3] * factor[o4]*factor2[o3] * factor2[o4]
+                            newOrb[orbToIndex[o4], orbToIndex[o3]] = value*factor[o3] * factor[o4]*factor2[o3] * factor2[o4]
+
+        return newOrb        
     def create_tight_binding(self, k, N=1, potentialProfile = None):
     
         kx,ky = k
@@ -98,7 +157,7 @@ class TightBindingHamiltonian:
 
         # old code with sp3 hybridization 
         for atom_idx, atom in indexToAtom.items():
-            hybridizationMatrix = self.H_sp3_explicit.copy() 
+            hybridizationMatrix = self.hybridizationMatrix.copy() 
 
             for delta in unitCell.dangling_bonds(atom):
                 signs = np.array([1/4] + list(delta)) * 4
@@ -108,9 +167,10 @@ class TightBindingHamiltonian:
             # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
             onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T # go back to orbital basis 
             
-            A[atom_idx*10:atom_idx*10 + 4, atom_idx*10:atom_idx*10 + 4] = onsiteMatrix
-            A[atom_idx*10 + 4:atom_idx*10 + 9, atom_idx*10 + 4:atom_idx*10 + 9] = np.eye(5) * tbp.E['dxy']
-            A[atom_idx*10 + 9,atom_idx*10 + 9] = tbp.E['s*']
+            newOnsite = self.danglingBonds(onsiteMatrix)
+            A[atom_idx*10:atom_idx*10 + 7, atom_idx*10:atom_idx*10 + 7] = newOnsite
+            A[atom_idx*10 + 7:atom_idx*10 + 9, atom_idx*10 + 7:atom_idx*10 + 9] = np.eye(2) * E['dxy']
+            A[atom_idx*10 + 9,atom_idx*10 + 9] = E['s*']
         
         for atom_index in range(numSilicon):
             atom = indexToAtom[atom_index]
@@ -188,7 +248,7 @@ class TightBindingHamiltonian:
         # ---------- on‑site (Si) ----------
         
         for atom_idx, atom in indexToAtom.items():
-            hybridizationMatrix = self.H_sp3_explicit.copy() 
+            hybridizationMatrix = self.hybridizationMatrix.copy() 
 
             for delta in unitCell.dangling_bonds(atom):
                 signs = np.array([1/4] + list(delta)) * 4
@@ -196,15 +256,15 @@ class TightBindingHamiltonian:
                 hybridizationMatrix[h, h] += tbp.E['sp3']          # increase the energy of dangling states 
         
             # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
-            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T # go back to orbital basis 
+            onsiteMatrix = self.cob @ hybridizationMatrix @ self.cob.T # go back to orbital basis 
+            onsiteMatrix = self.danglingBonds(onsiteMatrix)
             base = atom_idx * numOrbitals
-            for i in range(4):
-                for j in range(i ,4):
+            for i in range(7):
+                for j in range(i ,7):
                     add(base + i, base + j, onsiteMatrix[i,j])
-            for p in range(4, 9):                       # five d’s
-                add(base + p, base + p, tbp.E['dxy'])
-            add(base + 9, base + 9, tbp.E['s*'])
-            
+            for p in range(7, 9):                       # five d’s
+                add(base + p, base + p, E['dxy'])
+            add(base + 9, base + 9, E['s*'])
         for atom_index, atom in indexToAtom.items():
             base_i = atom_index * numOrbitals
             for neighbor, (delta, l, m, n) in unitNeighbors[atom].items():
