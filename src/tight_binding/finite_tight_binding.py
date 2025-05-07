@@ -37,7 +37,7 @@ class TightBindingHamiltonian:
         np.fill_diagonal(H_sp3_explicit, a)
         self.H_sp3_explicit = H_sp3_explicit"""
         
-        
+        # this part of the code deals with dangling bonds, note we are treating our hybridized orbitals as a mix of spd
         cob = 0.5*np.array([[1, 1, 1, 1],
                                 [1, 1,-1,-1],
                                 [1,-1, 1,-1],
@@ -46,16 +46,16 @@ class TightBindingHamiltonian:
         self.cob = cob
 
         self.newOrbitals = ['s', 'x1', 'x2', 'x3']
-        self.translation = {'s':('s'), 'x1' : ('px', 'dxy'), 'x2': ('py', 'dyz'), 'x3': ('pz', 'dzx')}
-        orbitalMatrix = np.diag(np.array([E['s'],  E['px'] + E['dxy'], E['px'] +  E['dxy'], E['px'] +  E['dxy']]))
+        self.translation = {'s':('s'), 'x1' : ('px', 'dxy'), 'x2': ('py', 'dyz'), 'x3': ('pz', 'dzx')} # group p and d
+        orbitalMatrix = np.diag(np.array([E['s'],  E['px'] + E['dxy'], E['px'] +  E['dxy'], E['px'] +  E['dxy']])) # set up base matrix
 
         Es = E['s']
         Ep = E['px']
         Ed = E['dxy']
-        alpha = np.sqrt(Ep  / (Ep + Ed))
+        alpha = np.sqrt(Ep  / (Ep + Ed)) # factors to make sure we get correct values at end 
         beta = np.sqrt(Ed  / (Ep + Ed)) 
-        cont1 = 1
-        cont2 = 0
+        cont1 = 1 # contribution p orbitals do in dangling (default is 100%)
+        cont2 = 0 # contribution d orbitals do in dangling (default is 0%)
  
         self.factor = {'s': 1, 'px':alpha, 'py':alpha, 'pz':alpha, 'dxy':beta,'dyz':beta,'dzx':beta}
         self.factor2 = {'s': 1, 'px':cont1, 'py':cont1, 'pz':cont1, 'dxy':cont2,'dyz':cont2,'dzx':cont2}
@@ -64,7 +64,7 @@ class TightBindingHamiltonian:
         self.orbToIndex= {}
         for oa, orb in enumerate(orbitalDangling):
             self.orbToIndex[orb] = oa
-        self.hybridizationMatrix = cob.T @ orbitalMatrix @ cob
+        self.hybridizationMatrix = cob.T @ orbitalMatrix @ cob # hybridized basis s, x1, x2, x3
 
         
         
@@ -177,24 +177,15 @@ class TightBindingHamiltonian:
             neighbors = unitNeighbors[atom]
             for orbitalIndex, orbital in enumerate(orbitals):
                 index_i = atom_index * numOrbitals + orbitalIndex
-                #effectiveZinPotential = int(atom.z * 4)
-                
-                #print(effectiveZinPotential)
-                #print(potentialProfile)
-                
-                #A[index_i,index_i] += potentialProfile[effectiveZinPotential]
-                
-                
+        
                 for neighbor in neighbors.keys():
                     delta = neighbors[neighbor][0]
                     l,m,n = neighbors[neighbor][1:]
                     phase = np.exp(2 * np.pi * 1j * (kx*delta[0] + ky*delta[1])) # blochs theorem does not work 
                     
-                    neighbor_index = atomToIndex[neighbor]       
-                    
+                    neighbor_index = atomToIndex[neighbor]                           
                     for secOrbitalIndex, secondOrbital in enumerate(orbitals):
                         index_j = neighbor_index * numOrbitals + secOrbitalIndex
-                        
                         hop = tbp.SK[(orbital, secondOrbital)](l, m, n, tbp.V)
                             
                         A[index_i,index_j] += hop * phase   
