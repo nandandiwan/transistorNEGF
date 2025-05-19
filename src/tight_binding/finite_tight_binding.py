@@ -102,8 +102,9 @@ class TightBindingHamiltonian:
 
 
     def create_tight_binding_sparse(self,k, N=1, potentialProfile=None, sigma=0.5, eigRange=10):
-        kx,ky = k
         
+    
+        kx, ky = k
         #print(N)
         unitNeighbors = self.unitCell.neighbors
         danglingBonds = self.unitCell.danglingBonds
