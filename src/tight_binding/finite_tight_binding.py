@@ -37,7 +37,19 @@ class TightBindingHamiltonian:
         np.fill_diagonal(H_sp3_explicit, a)
         self.H_sp3_explicit = H_sp3_explicit
         
-    def create_tight_binding(self,k, N=1, potentialProfile = None):
+        # effective mass params
+        self.Nk = 30
+        self.a = 5.431e-10
+       
+        # Sparse settings
+        self.sigma = 0.55 # start values of eigenvalues
+        self.eigenRange = 10 # amount of computed eigenvalues (initially 10)
+        self.cbm = {}
+        self.vbm = {}
+        self.cbmValue = [0,np.inf]
+        self.vbmValue = [0, -np.inf]
+        
+    def create_tight_binding(self,k, N=1):
         kx,ky = k
         
         #print(N)
@@ -61,7 +73,7 @@ class TightBindingHamiltonian:
             indexToAtom[atom_index] = atom
         
         
-        # old code with sp3 hybridization 
+    
         for atom_idx, atom in indexToAtom.items():
             hybridizationMatrix = self.H_sp3_explicit.copy() 
             danglingBondsList = danglingBonds[atom]
@@ -74,7 +86,6 @@ class TightBindingHamiltonian:
             A[atom_idx*10 + 4:atom_idx*10 + 9, atom_idx*10 + 4:atom_idx*10 + 9] = np.eye(5) * E['dxy']
             A[atom_idx*10 + 9,atom_idx*10 + 9] = E['s*']
     
-            # old code with sp3 hybridization 
         for atom_index in range(numSilicon):
             atom = indexToAtom[atom_index]
             neighbors = unitNeighbors[atom]
@@ -96,11 +107,8 @@ class TightBindingHamiltonian:
             print("H isnt Hermitian")
 
         eigvals,eigv = np.linalg.eigh(A)
-        return eigvals, A
-        
-
-
-
+        return eigvals, eigv
+ 
     def create_tight_binding_sparse(self,k, N=1, potentialProfile=None, sigma=0.5, eigRange=10):
         
     
@@ -193,44 +201,127 @@ class TightBindingHamiltonian:
                                 sigma=sigma, which='LM', tol=1e-6)
 
 
-        return eigvals, H
+        order = np.argsort(eigvals.real)   
+        eigvals = eigvals[order]
+        eigvecs = eigvecs[:, order]
 
+        return eigvals, eigvecs
 
-    # create the k grid
-    def make_mp_grid(self,Nk):
-        """Return an (Nk3, 3) array of fractional k-vectors (0 … 1) in the 1st BZ."""
-        shifts = np.linspace(0, 1, Nk, endpoint=False) + 0.5/Nk   
-        klist  = np.array(list(product(shifts, repeat=2)))        
+        
+    def make_mp_grid(self, Nk, centred=True):
+        if centred:
+            # symmetric points:  -½, -(½-1/Nk), …, +(½-1/Nk)
+            half_step = 0.5 / Nk
+            shifts = np.arange(-0.5, 0.5, 1.0 / Nk) + half_step
+        else:
+            # conventional Γ‑centred grid on [0,1)
+            shifts = np.arange(Nk) / Nk
 
-        return klist                                             
-
-
-
+        klist = np.array(list(product(shifts, repeat=2)))  # shape (Nk**2, 2)
+        return klist   
+                                            
     # helper method 
     def frac_shift(self, k_frac, delta):
-        return (k_frac + delta) % 1.0
+        return (k_frac + delta) #% 1.0
+    def _sparse_eval(self, k, sigma, m):
+        """Return eigenvalue array (sorted) for a given sigma and range m."""
+        eigenvalues, eigenvectors = self.create_tight_binding_sparse(k, self.N,
+                                                 sigma=sigma,
+                                                 eigRange=m)
+        return np.asarray(eigenvalues), np.asarray(eigenvectors)
+    
+  
+    def analyzeEnergyRange(self, k, energies=None, effectiveMassCalc=True,
+                           max_iter=25, grow=5, σ_step=0.2):
 
-    #  effective-mass tensor around the CBM
-    def find_effective_mass(self, k_min_frac, Nk_coarse, band_idx,
-                            resolution_factor=4, a=5.431e-10):
+        if energies is None:
+            energies, eigenvectors = self._sparse_eval(k, self.sigma, self.eigenRange)
+       
+        for _ in range(max_iter):
 
+            has_pos = np.any(energies > 0)
+            has_neg = np.any(energies < 0)
+            if has_pos and has_neg:
+                # collect extrema
+                min_pos_idx = np.argmin(energies[energies > 0])
+                max_neg_idx = np.argmax(energies[energies < 0])
 
-        delta_frac = 1.0 / (Nk_coarse * resolution_factor)        # we want a finer mesh size
-        dk = (2*np.pi / a) * delta_frac                       
+                min_positive = energies[energies > 0][min_pos_idx]
+                max_negative = energies[energies < 0][max_neg_idx]
 
+                # bookeeping
+                if not effectiveMassCalc:
+                    self.cbm[tuple(k)] = [min_positive, self.sigma, self.eigenRange]
+                    if min_positive < self.cbmValue[1]:
+                        print(k, min_positive)
+                        self.cbmValue = [k, min_positive]
 
-        k0 = np.asarray(k_min_frac, float)
+                    self.vbm[tuple(k)] = [max_negative, self.sigma, self.eigenRange]
+                    if max_negative > self.vbmValue[1]:        # less negative is “larger”
+                        self.vbmValue = [k, max_negative]
 
-        # get the good energy
+                # --------- prepare next k‑point search ----------------------
+                self.sigma = 0.5 * (min_positive + max_negative)
+                self.eigenRange = 5                           # reset to a lean window
+
+    
+                if effectiveMassCalc:
+               
+                    return min_positive
+                return min_positive, max_negative                             
+            band_min, band_max = energies.min(), energies.max()
+
+            
+            # adaptive sigma
+            if not has_pos:     
+                self.sigma += max(σ_step, 0.5*abs(band_min))  
+            elif not has_neg:   
+                self.sigma -= max(σ_step, 0.5*abs(band_max))
+
+            # widen the window a little every time we fail
+            self.eigenRange += grow
+            energies = self._sparse_eval(k, self.sigma, self.eigenRange)
+
+        # ---------- could not bracket zero within max_iter -------------------
+        print(f"[warn] unable to bracket E=0 at k={k} after {max_iter} trials")
+        if effectiveMassCalc:
+            return None          # caller must handle this case
+        
+    def getMinimum(self,k_frac):
+        return self.analyzeEnergyRange(k_frac, effectiveMassCalc = True)
+        
+    def eval_k_sparse(self, k_frac, effMass = True):
+        eigenvalues, eigenvectors = self.create_tight_binding_sparse(np.array([0,0]), sigma=self.sigma, eigRange= self.eigenRange)
+        self.analyzeEnergyRange(k_frac, eigenvalues, effectiveMassCalc = effMass)
+    
+    def determineInitialSparseSettings(self):
+        k = np.array([0,0])
+        eigenvalues, eigenvectors = self.create_tight_binding_sparse(np.array([0,0]), sigma=self.sigma, eigRange= self.eigenRange)
+        self.analyzeEnergyRange(k, eigenvalues)
+    
+    def scan_full_BZ(self, Nk=51, store_all=True, n_jobs=None, a=5.431e-10, res_factor=4):
+        self.Nk = Nk
+        klist = self.make_mp_grid(Nk)
+        #print(klist)
+        for k in klist:
+            self.eval_k_sparse(k, effMass=False)
+    
+    def calculateEffectiveMass(self, startk = np.array([0,0]), resolution=4):
+        """
+        This code finds the effective mass using a parabolic approximation. 
+        It needs to be changed for non-parabolicity
+        """
         def E(k_frac):
-            evs, _ = self.create_tight_binding(k_frac, N=self.N)
-            return evs[band_idx]
+            evs = self.analyzeEnergyRange(k_frac,effectiveMassCalc=True)
+            #print(evs, k_frac)
+            return evs
 
+        delta_frac = 1.0 / (self.Nk * resolution)
+        dk = (2 * np.pi / self.a) * delta_frac
 
-        #shift 
+        k0 = np.asarray(startk, float)
+        #print(f"this the min {E(k0)}")
         ei = np.eye(2)
-
-        # Hessian 
         H = np.zeros((2,2))
         for i in range(2):
             # second derivative along axis i
@@ -246,80 +337,27 @@ class TightBindingHamiltonian:
                 kmp = self.frac_shift(k0, -delta_frac*ei[i] + delta_frac*ei[j])
                 H[i,j] = H[j,i] = (E(kpp)+E(kmm)-E(kpm)-E(kmp)) / (4*dk**2)
 
-        # convert eV → J
         H_J = H * spc.e
+        mstar_SI = spc.hbar**2 * np.linalg.inv(H_J)
+        mstar_me = mstar_SI / spc.m_e
+        eigvals, eigvecs = np.linalg.eigh(mstar_me)  
+        principal_masses = eigvals       
 
-        # m*  = hbar^2 *
-        mstar_SI = spc.hbar**2 * np.linalg.inv(H_J)           # kg
-        mstar_me = mstar_SI / spc.m_e                         # in m_e
-
-        prin_m, prin_axes = np.linalg.eigh(mstar_me)
-        return mstar_me, prin_m, prin_axes
-
-    def eval_k(self, k_frac):
-        """return the good eigenvalues"""
-        eigvals, _ = self.create_tight_binding(k_frac, self.N)    
-        vbm = eigvals[eigvals <=  0.0].max()     
-        cbm = eigvals[eigvals >=  0.0].min()
-        return vbm, cbm, eigvals
-    def scan_full_BZ(self,Nk=20, store_all=True, n_jobs=None, a=5.431e-10,
-                    res_factor=4):
-        """
-        Nk       : number of k-points per reciprocal-lattice axis (Nk³ total)
-        store_all: if True, return the entire E(k) array (size Nk³ × Nb)
-        n_jobs   : cores to use; default = all available
-        """
-        
+        return principal_masses
     
-        klist = self.make_mp_grid(Nk)
-        nbands = len(self.create_tight_binding(np.zeros(2), self.N)[0])   # quick probe
-        
-        dk = 1 / Nk
-        # ----- parallel diagonalisation -----
-        n_jobs = n_jobs or cpu_count()
-        with Pool(processes=n_jobs) as pool:
-            results = pool.map(self.eval_k, klist, chunksize=len(klist)//n_jobs)
+    def getCbmValues(self, k, tol=1e-9): 
+      
+        sigma = self.sigma
+       
+        eigRange = self.eigenRange
+        evals, evecs = self._sparse_eval(np.asarray(k, float), sigma, eigRange)
 
-        # collect extrema
-        vbm_E, cbm_E = -np.inf, np.inf
-        vbm_data = cbm_data = None
-        if store_all:
-            all_E = np.empty((len(klist), nbands))
-            print(all_E.shape)
+        # first eigenvalue strictly above zero (within tolerance)
+        pos = np.where(evals > tol)[0]
+        if pos.size == 0:
+            raise RuntimeError(f"No positive eigenvalue found at k={k} "
+                            f"(sigma={sigma}, eigRange={eigRange}). "
+                            "Increase eigRange or adjust sigma.")
+        idx = pos[0]             
 
-        for idx, (v, c, eigs) in enumerate(results):
-            if v > vbm_E:
-                vbm_E      = v
-                vbm_data   = (v, klist[idx], int(np.where(eigs==v)[0][0]))
-            if c < cbm_E:
-                
-                cbm_E      = c
-                cbm_data   = (c, klist[idx], int(np.where(eigs==c)[0][0]))
-            if store_all:
-                all_E[idx] = eigs
-
-        
-        
-        
-        Egap = cbm_E - vbm_E
-        print(f"Fundamental gap = {Egap:.4f} eV")
-        print("VBM : E = {:.4f} eV  at k_frac = {}".format(*vbm_data[:2]))
-        print("CBM : E = {:.4f} eV  at k_frac = {}".format(*cbm_data[:2]))
-        print("Direct gap" if np.allclose(vbm_data[1], cbm_data[1]) else "Indirect gap")
-        mstar, prin_m, prin_ax = self.find_effective_mass(cbm_data[1], Nk,
-                                                    cbm_data[2],
-                                                    resolution_factor=res_factor,
-                                                    a=a)
-        print("\nEffective-mass tensor at CBM:\n", mstar)
-        print("Principal massesₑ:\n", prin_m)
-
-        if store_all:
-            return (Egap, vbm_data, cbm_data,
-                    klist, all_E,
-                    mstar, prin_m, prin_ax)
-        return Egap, vbm_data, cbm_data, mstar, prin_m, prin_ax
-
-
- 
-        
-    
+        return evals[idx], evecs[:, idx]
