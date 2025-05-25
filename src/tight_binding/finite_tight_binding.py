@@ -345,25 +345,39 @@ class TightBindingHamiltonian:
 
         return principal_masses
     
-    def getCbmValues(self, k, tol=1e-9): 
+    def getBandValues(self, k, tol=1e-9): 
       
-        sigma = self.sigma
-       
-        eigRange = self.eigenRange
+        sigma     = self.sigma
+        eigRange  = self.eigenRange
         evals, evecs = self._sparse_eval(np.asarray(k, float), sigma, eigRange)
-    
-        
-        # first eigenvalue strictly above zero (within tolerance)
-        pos = np.where(evals > tol)[0]
-        if pos.size == 0:
-            raise RuntimeError(f"No positive eigenvalue found at k={k} "
-                            f"(sigma={sigma}, eigRange={eigRange}). "
-                            "Increase eigRange or adjust sigma.")
-        idx = pos[0]             
+        evals -= np.float64(sigma)
 
-        return evals[idx], evecs[:, idx]
+        pos = np.where(evals >  tol)[0]
+        if pos.size == 0:
+            raise RuntimeError(
+                f"No positive eigenvalue found at k={k} "
+                f"(sigma={sigma}, eigRange={eigRange}). "
+                "Increase eigRange or adjust sigma."
+            )
+        cbm_idx  = pos[0]
+        cbm_E    = float(evals[cbm_idx])
+        cbm_vec  = evecs[:, cbm_idx]
+
+        neg = np.where(evals < -tol)[0]
+        if neg.size == 0:
+            raise RuntimeError(
+                f"No negative eigenvalue found at k={k} "
+                f"(sigma={sigma}, eigRange={eigRange}). "
+                "Increase eigRange or adjust sigma."
+            )
+        vbm_idx  = neg[-1]
+        vbm_E    = float(evals[vbm_idx])
+        vbm_vec  = evecs[:, vbm_idx]
+
+        return cbm_E + np.float64(sigma), cbm_vec, vbm_E + np.float64(sigma), vbm_vec
     
- 
+    
+    
 
     def get_potential_matrix(self):
 
@@ -380,3 +394,15 @@ class TightBindingHamiltonian:
         V_diag = np.repeat(V_atom, NUM_ORBITALS)
 
         return np.diag(V_diag)
+    
+    def modifySigma(self, cbmEv,cbmVec, vbmEv, vbmVec):
+        potMatrix = self.get_potential_matrix()
+        # do first order perturbation theory to guess the delta
+        delta1 = np.conjugate(cbmVec) @ potMatrix @ cbmVec
+        delta2 = np.conjugate(vbmVec) @ potMatrix @ vbmVec
+        
+        cbmEv, vbmEv = cbmEv + delta1, vbmEv + delta2
+        self.sigma = 0.5 * (cbmEv + vbmEv)
+        
+        print(cbmEv)
+      
