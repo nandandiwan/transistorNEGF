@@ -167,16 +167,17 @@ class TightBindingHamiltonian:
                 hybridizationMatrix[position,position] += E['sp3']            
             
             # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
-        atomPotential = self.unitCell.ATOM_POTENTIAL[atom]
-        onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T + np.eye(4) * atomPotential
-        base = atom_idx * numOrbitals
-        for i in range(4):
-            for j in range(i ,4):
-                add(base + i, base + j, onsiteMatrix[i,j])
-       
-        for p in range(4, 9):                       # five d’s
-            add(base + p, base + p, E['dxy']  + atomPotential)
-        add(base + 9, base + 9, E['s*'] + atomPotential)
+            atomPotential = self.unitCell.ATOM_POTENTIAL[atom]
+        
+            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T + np.eye(4) * atomPotential
+            base = atom_idx * numOrbitals
+            for i in range(4):
+                for j in range(i ,4):
+                    add(base + i, base + j, onsiteMatrix[i,j])
+        
+            for p in range(4, 9):                       # five d’s
+                add(base + p, base + p, E['dxy']  + atomPotential)
+            add(base + 9, base + 9, E['s*'] + atomPotential)
         
     
         for atom_index, atom in indexToAtom.items():
@@ -191,9 +192,6 @@ class TightBindingHamiltonian:
                 for o1, orb1 in enumerate(orbitals):
                     for o2, orb2 in enumerate(orbitals):
                         hop = tbp.SK[(orb1, orb2)](l, m, n, tbp.V) * phase
-                        
-                        
-                        
                         add(base_i + o1, j*numOrbitals + o2, hop)
 
                 
@@ -287,8 +285,8 @@ class TightBindingHamiltonian:
         # ---------- could not bracket zero within max_iter -------------------
         print(f"[warn] unable to bracket E=0 at k={k} after {max_iter} trials")
         if effectiveMassCalc:
-            return None          # caller must handle this case
-        
+            return None          # caller must handle this case            
+    
     def getMinimum(self,k_frac):
         return self.analyzeEnergyRange(k_frac, effectiveMassCalc = True)
         
@@ -353,7 +351,8 @@ class TightBindingHamiltonian:
        
         eigRange = self.eigenRange
         evals, evecs = self._sparse_eval(np.asarray(k, float), sigma, eigRange)
-
+    
+        
         # first eigenvalue strictly above zero (within tolerance)
         pos = np.where(evals > tol)[0]
         if pos.size == 0:
@@ -363,3 +362,21 @@ class TightBindingHamiltonian:
         idx = pos[0]             
 
         return evals[idx], evecs[:, idx]
+    
+ 
+
+    def get_potential_matrix(self):
+
+        ORBITALS = ('s', 'px', 'py', 'pz',
+                'dxy', 'dyz', 'dzx', 'dx2y2', 'dz2', 's*')
+        NUM_ORBITALS = len(ORBITALS)
+        
+        atom_order  = list(self.unitCell.neighbors)      
+        V_atom      = np.asarray(
+            [self.unitCell.ATOM_POTENTIAL[a] for a in atom_order],
+            dtype=float)
+
+
+        V_diag = np.repeat(V_atom, NUM_ORBITALS)
+
+        return np.diag(V_diag)
