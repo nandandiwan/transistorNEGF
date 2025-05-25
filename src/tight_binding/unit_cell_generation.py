@@ -63,10 +63,12 @@ class UnitCell:
         self.N = N
         self.R = self.change_of_base_matrix() if self.HKL != (0, 0, 1) else np.eye(3)
         self.ATOM_POSITIONS = []
+        self.ATOM_POTENTIAL = {}
         self.Z_ATOMS = {}
         self.createBasis()
         self.neighbors, self.danglingBonds = self.mapNeighbors()
         self.Nx, self.Ny, self.Nz = 0,0,0
+        self.setVoltage()
 
     def createBasis(self):
         for layer in range(1, self.N + 1):
@@ -77,7 +79,15 @@ class UnitCell:
                     self.Z_ATOMS.update({atom.z : atom})
             
 
-    
+    def setVoltage(self, voltage=None):
+        for atom in self.ATOM_POSITIONS:
+            if voltage is not None:
+                i,j,k = self.xyz_to_grid(atom.x,atom.y,atom.z)
+            
+                self.ATOM_POTENTIAL[atom] = voltage[int(i),int(j),int(k)]
+            else:
+                self.ATOM_POTENTIAL[atom] = 0
+            
     def change_of_base_matrix(self):
         new_z = self.normalize(self.HKL)
         global_z = np.array([0, 0, 1])
@@ -148,16 +158,23 @@ class UnitCell:
         # so corners are (.5,.5) , (.25,.25), (0,.5), (0.25,.75)
         self.Nx, self.Ny, self.Nz = Nx, Ny, Nz
      
-    
-    def cellToGrid(self, r):
-        x,y,z = r
-        arr = np.array([x,y])
-        rot = UnitCell.createRotationMatrix(-np.pi/4 - np.pi/2)
-        arr = rot @ arr
-        arr -= np.array([0.25,0.25])
         
-        gx,gy, gz = arr[0] / 0.25 * (self.Nx- 1), arr[1] / 0.25 * (self.Ny- 1), z / self.N * (self.Nz - 1) 
-        return gx,gy,gz
+    def xyz_to_grid(self, x, y, z):
+        # shift
+        x,y = x - 0.25, y - 0.5
+        rot = UnitCell.createRotationMatrix(-3 * np.pi / 4)
+        x,y = rot @ np.asarray([x,y])
+        x,y = x + np.sqrt(2)/8, y+ np.sqrt(2)/8
+        
+        #scale
+        x,y = 4 * x / np.sqrt(2), 4 * y / np.sqrt(2)
+        x,y = np.round(x), np.round(y)
+        x,y = x * (self.Nx - 1), y * (self.Ny - 1)
+        
+        # N is number of unit cells ie max height is N, 
+        z = np.round(z / self.N * (self.Nz - 1))
+        
+        return x, y,z
     def gridToCell(self, r):
         gx, gy, gz = r
         arr = np.array([

@@ -85,6 +85,7 @@ class TightBindingHamiltonian:
             A[atom_idx*10:atom_idx*10 + 4, atom_idx*10:atom_idx*10 + 4] = onsiteMatrix
             A[atom_idx*10 + 4:atom_idx*10 + 9, atom_idx*10 + 4:atom_idx*10 + 9] = np.eye(5) * E['dxy']
             A[atom_idx*10 + 9,atom_idx*10 + 9] = E['s*']
+            A[atom_idx * 10: atom_idx *10 +10, atom_idx * 10: atom_idx *10 +10] += np.eye(10) * self.unitCell.ATOM_POTENTIAL[atom]
     
         for atom_index in range(numSilicon):
             atom = indexToAtom[atom_index]
@@ -166,15 +167,16 @@ class TightBindingHamiltonian:
                 hybridizationMatrix[position,position] += E['sp3']            
             
             # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
-            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T # go back to orbital basis 
-        
-            base = atom_idx * numOrbitals
-            for i in range(4):
-                for j in range(i ,4):
-                    add(base + i, base + j, onsiteMatrix[i,j])
-            for p in range(4, 9):                       # five d’s
-                add(base + p, base + p, E['dxy'])
-            add(base + 9, base + 9, E['s*'])
+        atomPotential = self.unitCell.ATOM_POTENTIAL[atom]
+        onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T + np.eye(4) * atomPotential
+        base = atom_idx * numOrbitals
+        for i in range(4):
+            for j in range(i ,4):
+                add(base + i, base + j, onsiteMatrix[i,j])
+       
+        for p in range(4, 9):                       # five d’s
+            add(base + p, base + p, E['dxy']  + atomPotential)
+        add(base + 9, base + 9, E['s*'] + atomPotential)
         
     
         for atom_index, atom in indexToAtom.items():
