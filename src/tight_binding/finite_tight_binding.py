@@ -169,7 +169,7 @@ class TightBindingHamiltonian:
             # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
             atomPotential = self.unitCell.ATOM_POTENTIAL[atom]
         
-            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T + np.eye(4) * atomPotential
+            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T + np.eye(4) * atomPotential 
             base = atom_idx * numOrbitals
             for i in range(4):
                 for j in range(i ,4):
@@ -349,11 +349,14 @@ class TightBindingHamiltonian:
       
         sigma     = self.sigma
         eigRange  = self.eigenRange
+  
         evals, evecs = self._sparse_eval(np.asarray(k, float), sigma, eigRange)
         evals -= np.float64(sigma)
 
         pos = np.where(evals >  tol)[0]
         if pos.size == 0:
+            
+            
             raise RuntimeError(
                 f"No positive eigenvalue found at k={k} "
                 f"(sigma={sigma}, eigRange={eigRange}). "
@@ -380,6 +383,7 @@ class TightBindingHamiltonian:
     
 
     def get_potential_matrix(self):
+        """This function returns the matr"""
 
         ORBITALS = ('s', 'px', 'py', 'pz',
                 'dxy', 'dyz', 'dzx', 'dx2y2', 'dz2', 's*')
@@ -395,14 +399,44 @@ class TightBindingHamiltonian:
 
         return np.diag(V_diag)
     
+    def getChangeInVoltage(self):
+        ORBITALS = ('s', 'px', 'py', 'pz',
+        'dxy', 'dyz', 'dzx', 'dx2y2', 'dz2', 's*')
+        NUM_ORBITALS = len(ORBITALS)
+        
+        atom_order  = list(self.unitCell.neighbors)      
+        V_atom      = np.asarray(
+            [self.unitCell.ATOM_POTENTIAL[a] for a in atom_order],
+            dtype=float)
+
+
+        V_diag = np.repeat(V_atom, NUM_ORBITALS)
+    
+        
+        if self.unitCell.OLD_POTENTIAL is None:
+            V_diag2 = np.zeros_like(V_diag)
+        else:
+            V_atom      = np.asarray(
+            [self.unitCell.OLD_POTENTIAL[a] for a in atom_order],
+            dtype=float)
+            V_diag2 = np.repeat(V_atom, NUM_ORBITALS)
+        self.unitCell.OLD_POTENTIAL = self.unitCell.ATOM_POTENTIAL
+        A = np.diag(V_diag) - np.diag(V_diag2)
+        #
+        return A
     def modifySigma(self, cbmEv,cbmVec, vbmEv, vbmVec):
-        potMatrix = self.get_potential_matrix()
-        # do first order perturbation theory to guess the delta
+        """This function uses perturbation theory to guess the sigma for the sparse solver"""
+        
+        potMatrix = self.getChangeInVoltage()
+        
         delta1 = np.conjugate(cbmVec) @ potMatrix @ cbmVec
         delta2 = np.conjugate(vbmVec) @ potMatrix @ vbmVec
         
         cbmEv, vbmEv = cbmEv + delta1, vbmEv + delta2
         self.sigma = 0.5 * (cbmEv + vbmEv)
+        print(self.sigma)
         
-        print(cbmEv)
+        
+        
+     
       

@@ -64,10 +64,14 @@ class UnitCell:
         self.R = self.change_of_base_matrix() if self.HKL != (0, 0, 1) else np.eye(3)
         self.ATOM_POSITIONS = []
         self.ATOM_POTENTIAL = {}
+        self.OLD_POTENTIAL = None
         self.Z_ATOMS = {}
         self.createBasis()
         self.neighbors, self.danglingBonds = self.mapNeighbors()
         self.Nx, self.Ny, self.Nz = 0,0,0
+        
+        self.voltageProfile = None
+        self.oldVoltageProfile = None
         self.setVoltage()
 
     def createBasis(self):
@@ -82,9 +86,12 @@ class UnitCell:
     def setVoltage(self, voltage=None):
         for atom in self.ATOM_POSITIONS:
             if voltage is not None:
+                self.voltageProfile = voltage
                 i,j,k = self.xyz_to_grid(atom.x,atom.y,atom.z)
             
                 self.ATOM_POTENTIAL[atom] = voltage[int(i),int(j),int(k)]
+        
+            
             else:
                 self.ATOM_POTENTIAL[atom] = 0
             

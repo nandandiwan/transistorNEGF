@@ -3,8 +3,6 @@ import matplotlib.pyplot as plt
 from finite_tight_binding import TightBindingHamiltonian
 
 class BandStructurePlotter():
-
-   
     def __init__(self, TB_Object : TightBindingHamiltonian):
         self.N = TB_Object.N
         self.TB = TB_Object
@@ -95,5 +93,38 @@ class BandStructurePlotter():
                 plt.axvline(x, color='grey', ls='--', lw=0.6)
             plt.xticks(tick_pos, list(k_labels.keys()))
 
+        plt.tight_layout()
+        plt.show()
+        
+        self.k_path = None
+        self.k_ticks = None      
+        self.energies = None  
+        
+    
+import numpy as np
+import matplotlib.pyplot as plt
+
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.pyplot as plt
+
+class PotentialPlotter:
+    def __init__(self, TB_Object):
+        self.unitCell = TB_Object.unitCell          # no other state needed
+
+    def plot_V_vs_z(self):
+  
+        V   = self.unitCell.voltageProfile          # shape (Nx, Ny, Nz)
+        print(V)
+        mean_V = V.mean(axis=(0, 1))                # (Nz,)
+        z_axis = np.arange(len(mean_V))             # 0 … Nz‑1
+
+        plt.figure(figsize=(6, 4))
+        plt.plot(z_axis, mean_V, marker='o', lw=1.5)
+        plt.xlabel("z index")
+        plt.ylabel(r"$\langle V\rangle_{xy}$  (V)")
+        plt.grid(alpha=0.4)
+        plt.title("Average potential vs z")
         plt.tight_layout()
         plt.show()
