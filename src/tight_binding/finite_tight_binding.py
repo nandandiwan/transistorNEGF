@@ -2,15 +2,15 @@ import unit_cell_generation as unitcellgeneration
 import tight_binding_params as tbp
 from tight_binding_params import E
 import numpy as np
-import numpy as np
 import scipy.constants as spc
 from itertools import product
 from multiprocessing import Pool, cpu_count
-import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
+from math import isclose
 
 class TightBindingHamiltonian:
+    THREE_KBT_300K = 3.0 * 8.617333262e-5 * 300.0
     def __init__(self, N):
         self.H = None
         self.N = None
@@ -344,6 +344,122 @@ class TightBindingHamiltonian:
         principal_masses = eigvals       
 
         return principal_masses
+
+    def _bracket_and_bisect(self, k0, v, limit=THREE_KBT_300K,
+                            initial_step=1e-4, k_max=0.5,
+                            max_bisect_iter=32, tol=1e-6):
+        
+        base_sigma = self.sigma 
+        
+        v = np.asarray(v, float)
+        norm = np.linalg.norm(v)
+        if norm == 0.0:
+            raise ValueError("direction vector v must be non‑zero")
+        v /= norm                          # normalise once
+
+        # reference CBM energy at k0
+        E0, _,vbm,_ = self.getBandValues(k=k0)
+        oldCBM = E0
+        oldVBM = vbm
+
+        def energyValues(t):
+            """E0 − E(k0 + t\cdot v)."""
+            cbm,_,vbm,_ = self.getBandValues(k=k0 + t * v)
+            return cbm,vbm
+            
+        t_low, f_low = 0.0, 0.0           # ΔE = 0 at t = 0
+        t = initial_step
+        while t <= k_max:
+            cbm,vbm = energyValues(t)
+            self.sigma += 0.5 * ((cbm - oldCBM) + (vbm - oldVBM))
+            oldCBM = cbm
+            oldVBM = vbm
+            
+    
+            f = cbm - E0
+            if f >= limit:             
+                break
+            t_low, f_low = t, f
+            t *= 2                        
+        else:
+            return None                 
+
+        t_high, f_high = t, f       
+        # now close the range 
+        for _ in range(max_bisect_iter):
+            t_mid = 0.5 * (t_low + t_high)
+            cbm,vbm = energyValues(t)
+            self.sigma += 0.5 * ((cbm - oldCBM) + (vbm - oldVBM))
+            oldCBM = cbm
+            oldVBM = vbm
+            f_mid = cbm - E0
+
+            if isclose(f_mid, limit, rel_tol=0, abs_tol=tol):
+                return k0 + t_mid * v
+
+            if f_mid < limit:             # still below the target
+                t_low, f_low = t_mid, f_mid
+            else:
+                t_high, f_high = t_mid, f_mid
+
+        self.sigma = base_sigma
+        return k0 + t_high * v
+    
+    def first_crossing_3kBT(self, k0=np.zeros(2), directions=((1, 0), (0, 1)),
+                        **kwargs):
+        """
+        For each direction in `directions` (iterable of 2‑D vectors) return the
+        first k‑point where deltaE ≥ 3kBT.  Yields (v, k_cross) pairs; k_cross is None
+        if the threshold is never reached before hitting the search limit.
+        """
+        k0 = np.asarray(k0, float)
+        for v in directions:
+            yield np.asarray(v, float), self._bracket_and_bisect(self, k0, v, **kwargs)
+            
+            
+    def calculateNonParabolicEffectiveMass(self,
+        k0=np.asarray([0.0, 0.0]),
+        samplingVectors=((1, 0), (-1, 0), (0, 1), (0, -1)),
+        step_fraction=0.5,
+        fallback_step=1e-4):
+        criticalKpts = list(self.first_crossing_3kBT())
+        baseEnergy, _,_,_ = self.getBandValues(k = np.asarray([0,0]))
+        
+        crossings = {tuple(v): kc for v, kc in
+                    self.first_crossing_3kBT(k0=k0, directions=samplingVectors)}
+
+        # E at k0
+        E0, *_ = self.getBandValues(k=k0)
+
+        def second_derivative(unit_v, dk):
+            """Central three‑point ∂²E/∂k² along unit_v at half‑step dk."""
+            E_plus,  *_ = self.getBandValues(k=k0 + dk * unit_v)
+            E_minus, *_ = self.getBandValues(k=k0 - dk * unit_v)
+            return (E_plus + E_minus - 2.0 * E0) / dk**2
+
+        m_eff = {}
+        for axis, u in (("mx", np.array([1.0, 0.0])),
+                        ("my", np.array([0.0, 1.0]))):
+
+            kc_p = crossings.get(tuple(u))
+            kc_m = crossings.get(tuple(-u))
+
+            if kc_p is not None and kc_m is not None:
+                # symmetric half‑step: pull back inside the nearer threshold‑point
+                dk = step_fraction * min(np.dot(kc_p - k0, u),
+                                        np.dot(k0 - kc_m, u))
+            else:
+                dk = fallback_step       
+
+            curv = second_derivative(u, dk)         
+            m_eff[axis] = (spc.hbar**2 / spc.e / curv) / spc.m_e       
+
+        return m_eff  
+            
+            
+        
+        
+        
     
     def getBandValues(self, k, tol=1e-9): 
       
@@ -434,8 +550,7 @@ class TightBindingHamiltonian:
         
         cbmEv, vbmEv = cbmEv + delta1, vbmEv + delta2
         self.sigma = 0.5 * (cbmEv + vbmEv)
-        print(self.sigma)
-        
+    
         
         
      
