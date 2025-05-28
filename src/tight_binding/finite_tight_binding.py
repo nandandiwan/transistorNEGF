@@ -10,7 +10,7 @@ import scipy.sparse.linalg as spla
 from math import isclose
 
 class TightBindingHamiltonian:
-    THREE_KBT_300K = 3.0 * 8.617333262e-5 * 300.0
+    THREE_KBT_300K = 0.07719080174
     def __init__(self, N):
         self.H = None
         self.N = None
@@ -49,7 +49,7 @@ class TightBindingHamiltonian:
         self.cbmValue = [0,np.inf]
         self.vbmValue = [0, -np.inf]
         
-    def create_tight_binding(self,k, N=1):
+    def create_tight_binding(self,k, N=1, getMatrix = False):
         kx,ky = k
         
         #print(N)
@@ -106,6 +106,9 @@ class TightBindingHamiltonian:
             dagger = lambda A: np.conjugate(A.T)
         if not np.allclose(A, dagger(A)):
             print("H isnt Hermitian")
+            
+        if getMatrix:
+            return A
 
         eigvals,eigv = np.linalg.eigh(A)
         return eigvals, eigv
@@ -336,8 +339,9 @@ class TightBindingHamiltonian:
                 kpm = self.frac_shift(k0, +delta_frac*ei[i] - delta_frac*ei[j])
                 kmp = self.frac_shift(k0, -delta_frac*ei[i] + delta_frac*ei[j])
                 H[i,j] = H[j,i] = (E(kpp)+E(kmm)-E(kpm)-E(kmp)) / (4*dk**2)
-
+        print(H)
         H_J = H * spc.e
+        
         mstar_SI = spc.hbar**2 * np.linalg.inv(H_J)
         mstar_me = mstar_SI / spc.m_e
         eigvals, eigvecs = np.linalg.eigh(mstar_me)  
@@ -353,6 +357,7 @@ class TightBindingHamiltonian:
         
         v = np.asarray(v, float)
         norm = np.linalg.norm(v)
+        print(v, norm)
         if norm == 0.0:
             raise ValueError("direction vector v must be non‑zero")
         v /= norm                          # normalise once
@@ -405,7 +410,7 @@ class TightBindingHamiltonian:
         self.sigma = base_sigma
         return k0 + t_high * v
     
-    def first_crossing_3kBT(self, k0=np.zeros(2), directions=((1, 0), (0, 1)),
+    def first_crossing_3kBT(self, k0=np.zeros(2), directions=[[1, 0], [0, 1]],
                         **kwargs):
         """
         For each direction in `directions` (iterable of 2‑D vectors) return the
@@ -414,54 +419,64 @@ class TightBindingHamiltonian:
         """
         k0 = np.asarray(k0, float)
         for v in directions:
-            yield np.asarray(v, float), self._bracket_and_bisect(self, k0, v, **kwargs)
+            yield np.asarray(v, float), self._bracket_and_bisect(k0, v, **kwargs)
             
             
     def calculateNonParabolicEffectiveMass(self,
         k0=np.asarray([0.0, 0.0]),
-        samplingVectors=((1, 0), (-1, 0), (0, 1), (0, -1)),
+        samplingVectors=[[1, 0], [-1, 0], [0, 1], [0, -1]],
         step_fraction=0.5,
         fallback_step=1e-4):
-        criticalKpts = list(self.first_crossing_3kBT())
-        baseEnergy, _,_,_ = self.getBandValues(k = np.asarray([0,0]))
-        
+        E0, *_ = self.getBandValues(k=k0)
         crossings = {tuple(v): kc for v, kc in
                     self.first_crossing_3kBT(k0=k0, directions=samplingVectors)}
+        points = []
+        for direction, kvec in crossings.items():         
+            point = np.concatenate([kvec,                
+                                    [TightBindingHamiltonian.THREE_KBT_300K]])  
+            points.append(point)
 
-        # E at k0
-        E0, *_ = self.getBandValues(k=k0)
+        
+        
+        points.append(np.asarray([k0[0], k0[1], 0]))      #
 
-        def second_derivative(unit_v, dk):
-            """Central three‑point ∂²E/∂k² along unit_v at half‑step dk."""
-            E_plus,  *_ = self.getBandValues(k=k0 + dk * unit_v)
-            E_minus, *_ = self.getBandValues(k=k0 - dk * unit_v)
-            return (E_plus + E_minus - 2.0 * E0) / dk**2
+        points = np.asarray(points, dtype=float)
 
-        m_eff = {}
-        for axis, u in (("mx", np.array([1.0, 0.0])),
-                        ("my", np.array([0.0, 1.0]))):
+        def fit_paraboloid_and_hessian(points, include_linear=True):
 
-            kc_p = crossings.get(tuple(u))
-            kc_m = crossings.get(tuple(-u))
+            pts = np.asarray(points, dtype=float)
+            kx, ky, E = pts.T
 
-            if kc_p is not None and kc_m is not None:
-                # symmetric half‑step: pull back inside the nearer threshold‑point
-                dk = step_fraction * min(np.dot(kc_p - k0, u),
-                                        np.dot(k0 - kc_m, u))
+            if include_linear:
+                A = np.column_stack([kx**2 + ky**2, kx, ky, np.ones_like(kx)])
+                alpha, beta_x, beta_y, E0 = np.linalg.lstsq(A, E, rcond=None)[0]
             else:
-                dk = fallback_step       
+                A = np.column_stack([kx**2 + ky**2, np.ones_like(kx)])
+                alpha, E0 = np.linalg.lstsq(A, E, rcond=None)[0]
+                beta_x = beta_y = 0.0
 
-            curv = second_derivative(u, dk)         
-            m_eff[axis] = (spc.hbar**2 / spc.e / curv) / spc.m_e       
+            H = np.array([[2*alpha, 0.0],
+                        [0.0,     2*alpha]])
 
-        return m_eff  
+            return H
+
+        H = fit_paraboloid_and_hessian(points) 
+        
+        
+        H_J = H * spc.e / (2 * np.pi / self.a)**2
+        mstar_SI = spc.hbar**2 * np.linalg.inv(H_J)
+        mstar_me = mstar_SI / spc.m_e
+        eigvals, eigvecs = np.linalg.eigh(mstar_me)  
+        principal_masses = eigvals       
+
+        return principal_masses
             
             
         
         
         
     
-    def getBandValues(self, k, tol=1e-9): 
+    def getBandValues(self, k, earlierk = np.asarray([0,0]), tol=1e-9): 
       
         sigma     = self.sigma
         eigRange  = self.eigenRange
@@ -496,7 +511,8 @@ class TightBindingHamiltonian:
         return cbm_E + np.float64(sigma), cbm_vec, vbm_E + np.float64(sigma), vbm_vec
     
     
-    
+    def getCBM(self, k = np.asarray([0,0])):
+        cbm,_,_,_ = self.getBandValues(k)
 
     def get_potential_matrix(self):
         """This function returns the matr"""
@@ -540,7 +556,7 @@ class TightBindingHamiltonian:
         A = np.diag(V_diag) - np.diag(V_diag2)
         #
         return A
-    def modifySigma(self, cbmEv,cbmVec, vbmEv, vbmVec):
+    def modifySigmaForVoltage(self, cbmEv,cbmVec, vbmEv, vbmVec):
         """This function uses perturbation theory to guess the sigma for the sparse solver"""
         
         potMatrix = self.getChangeInVoltage()
@@ -550,6 +566,18 @@ class TightBindingHamiltonian:
         
         cbmEv, vbmEv = cbmEv + delta1, vbmEv + delta2
         self.sigma = 0.5 * (cbmEv + vbmEv)
+        
+    def modifySigmaForDeltaK(self,k0,deltak,cbmEv,cbmVec, vbmEv, vbmVec):
+        Ap = self.create_tight_binding(k0 + deltak,getMatrix=True)
+        A0 = self.create_tight_binding(k0)
+        deltaA = Ap - A0
+        delta1 = np.conjugate(cbmVec) @ deltaA @ cbmVec
+        delta2 = np.conjugate(vbmVec) @ deltaA @ vbmVec
+        
+        cbmEv, vbmEv = cbmEv + delta1, vbmEv + delta2
+        self.sigma = 0.5 * (cbmEv + vbmEv)
+        
+        
     
         
         

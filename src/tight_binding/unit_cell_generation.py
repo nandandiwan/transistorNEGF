@@ -183,6 +183,7 @@ class UnitCell:
         
         return x, y,z
     def gridToCell(self, r):
+        """ outdated fix this with method in selfConsistent.ipynb"""
         gx, gy, gz = r
         arr = np.array([
             gx * 0.25 / (self.Nx - 1) + 0.25,

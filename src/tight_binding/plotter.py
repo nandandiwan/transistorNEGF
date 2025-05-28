@@ -119,7 +119,7 @@ class PotentialPlotter:
         
         mean_V = V.mean(axis=(0, 1))                # (Nz,)
         z_axis = np.arange(len(mean_V))             # 0 … Nz‑1
-        print(mean_V)
+        #print(mean_V)
 
         plt.figure(figsize=(6, 4))
         plt.plot(z_axis, mean_V, marker='o', lw=1.5)
