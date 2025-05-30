@@ -51,6 +51,7 @@ class UnitCell:
                 (+0.25, -0.25, +0.25), (+0.25, +0.25, -0.25)]
         }
     
+    a = 0.5431
     @staticmethod
     def baseCoordinates(n=1):
         "returns nth layer base coordinates" 
@@ -58,21 +59,46 @@ class UnitCell:
             raise Exception("should be positive")
         return [Atom(0.5,0.5,0 + n - 1), Atom(.25,.25,.25 + n - 1), Atom(0,.5,.5 + n -1), Atom(.25,.75,.75 + n - 1), Atom(.5,.5,1 + n - 1)]
     
-    def __init__(self,  N= 1, cleavage_plane = (0,0,1)):
+    @staticmethod
+    def nextDelta():
+        deltas = [(-0.25, -0.25, 0.25),
+                (-0.25,  0.25, 0.25),
+                ( 0.25,  0.25, 0.25),
+                ( 0.25, -0.25, 0.25)]
+        while True:
+            yield from deltas                
+            yield from UnitCell.nextDelta() 
+    
+    def __init__(self,  N= 1, thickness = None, cleavage_plane = (0,0,1)):
         self.HKL = cleavage_plane
-        self.N = N
+        
         self.R = self.change_of_base_matrix() if self.HKL != (0, 0, 1) else np.eye(3)
         self.ATOM_POSITIONS = []
         self.ATOM_POTENTIAL = {}
         self.OLD_POTENTIAL = None
         self.Z_ATOMS = {}
-        self.createBasis()
-        self.neighbors, self.danglingBonds = self.mapNeighbors()
-        self.Nx, self.Ny, self.Nz = 0,0,0
         
+        if thickness is None:
+            self.N = N
+            self.createBasis()
+        else:
+            self.thickness = thickness
+            self.layers = int((thickness / UnitCell.a / .25 + 1)) 
+            print(self.layers)
+            if self.layers < 2:
+                raise RuntimeError("Thickness must be enough for two layers (0.5431 nm)")       
+            self.fillLayers()
+            
+        
+        self.neighbors, self.danglingBonds = self.mapNeighbors()
+        
+            
+            
         self.voltageProfile = None
         self.oldVoltageProfile = None
         self.setVoltage()
+        self.Nx, self.Ny, self.Nz = 0,0,0
+        
 
     def createBasis(self):
         for layer in range(1, self.N + 1):
@@ -82,7 +108,25 @@ class UnitCell:
                     self.ATOM_POSITIONS.append(atom)
                     self.Z_ATOMS.update({atom.z : atom})
             
+    def fillLayers(self):
+        base_atom = Atom(0.5, 0.5, 0.0)
+        self.ATOM_POSITIONS.append(base_atom)
+        self.Z_ATOMS[0.0] = base_atom
 
+        # persistent generator that cycles through the four Δ‑vectors
+        delta_gen = UnitCell.nextDelta()      # one generator, reused
+
+        for layer in range(1, self.layers):
+            layer_z = layer * 0.25
+            previous_atom = self.Z_ATOMS[layer_z - 0.25]
+
+            delta = next(delta_gen)           # <- actual tuple
+
+            atom = previous_atom.add(delta)
+            self.ATOM_POSITIONS.append(atom)
+            self.Z_ATOMS[atom.z] = atom
+                
+    
     def setVoltage(self, voltage=None):
         for atom in self.ATOM_POSITIONS:
             if voltage is not None:
@@ -107,10 +151,16 @@ class UnitCell:
     
     def checkIfAllowed(self, newAtom):
         # check if atoms are in proper cell 
-        return not (newAtom.x < 0 or newAtom.y < 0 or newAtom.z < 0 or newAtom.z >= self.N or newAtom.x >= 1 or newAtom.y >= 1)
+        try:
+            return not (newAtom.x < 0 or newAtom.y < 0 or newAtom.z < 0 or newAtom.z >= self.N or newAtom.x >= 1 or newAtom.y >= 1)
+        except:
+            return not (newAtom.x < 0 or newAtom.y < 0 or newAtom.z < 0 or newAtom.z >= (self.layers - 1)  * 0.25 or newAtom.x >= 1 or newAtom.y >= 1)
         
     def checkIfAllowedInZDirection(self, newAtom):
-        return not (newAtom.z < 0 or newAtom.z > self.N)
+        try:
+            return not (newAtom.z < 0 or newAtom.z > self.N)
+        except:
+            return not (newAtom.z < 0 or newAtom.z > (self.layers - 1)  * 0.25)
     
     def determine_hybridization(delta):
         # Extract just the signs
@@ -179,7 +229,10 @@ class UnitCell:
         x,y = x * (self.Nx - 1), y * (self.Ny - 1)
         
         # N is number of unit cells ie max height is N, 
-        z = np.round(z / self.N * (self.Nz - 1))
+        try:
+            z = np.round(z / self.N * (self.Nz - 1))
+        except:
+            z = np.round(z / ((self.layers - 1) * 0.25) * (self.Nz - 1))
         
         return x, y,z
     def gridToCell(self, r):

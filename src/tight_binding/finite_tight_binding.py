@@ -11,10 +11,15 @@ from math import isclose
 
 class TightBindingHamiltonian:
     THREE_KBT_300K = 0.07719080174
-    def __init__(self, N):
+    def __init__(self, N=None, thickness = None):
+        
         self.H = None
-        self.N = None
-        self.unitCell = unitcellgeneration.UnitCell(N) 
+        self.N = N
+        self.thickness = thickness
+        if self.N:
+            self.unitCell = unitcellgeneration.UnitCell(N) 
+        else:
+            self.unitCell = unitcellgeneration.UnitCell(thickness=thickness)
         self.U_orb_to_sp3 = 0.5*np.array([[1, 1, 1, 1],
                              [1, 1,-1,-1],
                              [1,-1, 1,-1],
@@ -187,8 +192,8 @@ class TightBindingHamiltonian:
             base_i = atom_index * numOrbitals
             for atom2, delta, l,m,n in unitNeighbors[atom]:
                 j = atomToIndex[atom2]
-                if j < atom_index:              # upper‑triangle filter
-                    continue                    # let add() mirror it
+                if j < atom_index:             
+                    continue                   
 
                 phase = np.exp(2j*np.pi*(kx*delta[0] + ky*delta[1]))
 
@@ -309,6 +314,7 @@ class TightBindingHamiltonian:
         for k in klist:
             self.eval_k_sparse(k, effMass=False)
     
+  
     def calculateEffectiveMass(self, startk = np.array([0,0]), resolution=4):
         """
         This code finds the effective mass using a parabolic approximation. 
@@ -339,7 +345,7 @@ class TightBindingHamiltonian:
                 kpm = self.frac_shift(k0, +delta_frac*ei[i] - delta_frac*ei[j])
                 kmp = self.frac_shift(k0, -delta_frac*ei[i] + delta_frac*ei[j])
                 H[i,j] = H[j,i] = (E(kpp)+E(kmm)-E(kpm)-E(kmp)) / (4*dk**2)
-        print(H)
+        #print(H)
         H_J = H * spc.e
         
         mstar_SI = spc.hbar**2 * np.linalg.inv(H_J)
@@ -348,10 +354,15 @@ class TightBindingHamiltonian:
         principal_masses = eigvals       
 
         return principal_masses
-
+  
+    #TODO
     def _bracket_and_bisect(self, k0, v, limit=THREE_KBT_300K,
                             initial_step=1e-4, k_max=0.5,
                             max_bisect_iter=32, tol=1e-6):
+        """
+        This code is supposed to pinpoint the k point at which cbm has increased by 3kbT. 
+        Right now there is error finding this point. Code needs to work for arbitrary direction 
+        """
         
         base_sigma = self.sigma 
         
@@ -366,6 +377,7 @@ class TightBindingHamiltonian:
         E0, _,vbm,_ = self.getBandValues(k=k0)
         oldCBM = E0
         oldVBM = vbm
+        
 
         def energyValues(t):
             """E0 − E(k0 + t\cdot v)."""
@@ -379,10 +391,10 @@ class TightBindingHamiltonian:
             self.sigma += 0.5 * ((cbm - oldCBM) + (vbm - oldVBM))
             oldCBM = cbm
             oldVBM = vbm
-            
     
             f = cbm - E0
-            if f >= limit:             
+            if f >= limit:   
+                print(f)          
                 break
             t_low, f_low = t, f
             t *= 2                        
@@ -414,7 +426,7 @@ class TightBindingHamiltonian:
                         **kwargs):
         """
         For each direction in `directions` (iterable of 2‑D vectors) return the
-        first k‑point where deltaE ≥ 3kBT.  Yields (v, k_cross) pairs; k_cross is None
+        first k‑point where deltaE >= 3kBT.  Yields (v, k_cross) pairs; k_cross is None
         if the threshold is never reached before hitting the search limit.
         """
         k0 = np.asarray(k0, float)
@@ -427,9 +439,14 @@ class TightBindingHamiltonian:
         samplingVectors=[[1, 0], [-1, 0], [0, 1], [0, -1]],
         step_fraction=0.5,
         fallback_step=1e-4):
+        """Finds effective mass tensor based on the sampling vectors"""
+        
         E0, *_ = self.getBandValues(k=k0)
         crossings = {tuple(v): kc for v, kc in
                     self.first_crossing_3kBT(k0=k0, directions=samplingVectors)}
+        
+        print(crossings)
+        
         points = []
         for direction, kvec in crossings.items():         
             point = np.concatenate([kvec,                
@@ -471,12 +488,18 @@ class TightBindingHamiltonian:
 
         return principal_masses
             
-            
-        
-        
-        
+       
     
     def getBandValues(self, k, earlierk = np.asarray([0,0]), tol=1e-9): 
+        """Redundant method (analyzeEnergyRange exists) that does not expand range or sigma - better for larger systems  
+        for energy range but also gives cbm - test with PT to make it more effecient 
+        
+        1. test if cbm exists in range 
+        2. if so return, if not half k point and do 1
+        3. if so use pt theory to find expected delta E cbm and vbm from doubling k 
+        4. modify sigma and go back to original k point
+        5. make sigma back to original value and return valid cbm/vbm values
+        """
       
         sigma     = self.sigma
         eigRange  = self.eigenRange
