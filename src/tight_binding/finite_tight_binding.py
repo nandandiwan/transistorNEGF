@@ -4,11 +4,13 @@ from tight_binding_params import E
 import numpy as np
 import scipy.constants as spc
 from itertools import product
-from multiprocessing import Pool, cpu_count
+import os, multiprocessing as mp
+from joblib import Parallel, delayed
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
+from numpy.typing import NDArray
 from math import isclose
-
+import time
 class TightBindingHamiltonian:
     THREE_KBT_300K = 0.07719080174
     def __init__(self, N=None, thickness = None):
@@ -48,6 +50,7 @@ class TightBindingHamiltonian:
        
         # Sparse settings
         self.sigma = 0.55 # start values of eigenvalues
+        self.base_sigma =  0.55
         self.eigenRange = 10 # amount of computed eigenvalues (initially 10)
         self.cbm = {}
         self.vbm = {}
@@ -55,7 +58,8 @@ class TightBindingHamiltonian:
         self.vbmValue = [0, -np.inf]
         
     def create_tight_binding(self,k, N=1, getMatrix = False):
-        kx,ky = k
+        kx, ky = 4 / np.sqrt(2)* k
+
         
         #print(N)
     
@@ -121,7 +125,9 @@ class TightBindingHamiltonian:
     def create_tight_binding_sparse(self,k, N=1, potentialProfile=None, sigma=0.5, eigRange=10):
         
     
-        kx, ky = k
+        kx, ky =4 / np.sqrt(2)* k
+
+        
         #print(N)
         unitNeighbors = self.unitCell.neighbors
         danglingBonds = self.unitCell.danglingBonds
@@ -241,12 +247,20 @@ class TightBindingHamiltonian:
   
     def analyzeEnergyRange(self, k, energies=None, effectiveMassCalc=True,
                            max_iter=25, grow=5, σ_step=0.2):
+        """
+        This code changes the sigma and eigenrange to find the cbm/vbm values
+        It is meant to be used over large k space calculations - not single time uses (sigma changes everytime)
+        Once this method is done using use setBaseSigma() to get sigma back to normal value 
+        
+        Single use energy calcultations use 
+        """
 
         if energies is None:
             energies, eigenvectors = self._sparse_eval(k, self.sigma, self.eigenRange)
        
+        
         for _ in range(max_iter):
-
+            energies = np.sort(energies)
             has_pos = np.any(energies > 0)
             has_neg = np.any(energies < 0)
             if has_pos and has_neg:
@@ -268,13 +282,12 @@ class TightBindingHamiltonian:
                     if max_negative > self.vbmValue[1]:        # less negative is “larger”
                         self.vbmValue = [k, max_negative]
 
-                # --------- prepare next k‑point search ----------------------
+                # next kpt search
                 self.sigma = 0.5 * (min_positive + max_negative)
                 self.eigenRange = 5                           # reset to a lean window
 
     
                 if effectiveMassCalc:
-               
                     return min_positive
                 return min_positive, max_negative                             
             band_min, band_max = energies.min(), energies.max()
@@ -288,16 +301,15 @@ class TightBindingHamiltonian:
 
             # widen the window a little every time we fail
             self.eigenRange += grow
-            energies = self._sparse_eval(k, self.sigma, self.eigenRange)
-
+            energies, eigenvectors = self._sparse_eval(k, self.sigma, self.eigenRange)
         # ---------- could not bracket zero within max_iter -------------------
         print(f"[warn] unable to bracket E=0 at k={k} after {max_iter} trials")
         if effectiveMassCalc:
+           
             return None          # caller must handle this case            
     
     def getMinimum(self,k_frac):
         return self.analyzeEnergyRange(k_frac, effectiveMassCalc = True)
-        
     def eval_k_sparse(self, k_frac, effMass = True):
         eigenvalues, eigenvectors = self.create_tight_binding_sparse(np.array([0,0]), sigma=self.sigma, eigRange= self.eigenRange)
         self.analyzeEnergyRange(k_frac, eigenvalues, effectiveMassCalc = effMass)
@@ -306,6 +318,9 @@ class TightBindingHamiltonian:
         k = np.array([0,0])
         eigenvalues, eigenvectors = self.create_tight_binding_sparse(np.array([0,0]), sigma=self.sigma, eigRange= self.eigenRange)
         self.analyzeEnergyRange(k, eigenvalues)
+    
+    def setBaseSigma(self):
+        self.sigma = self.base_sigma
     
     def scan_full_BZ(self, Nk=51, store_all=True, n_jobs=None, a=5.431e-10, res_factor=4):
         self.Nk = Nk
@@ -326,7 +341,7 @@ class TightBindingHamiltonian:
             return evs
 
         delta_frac = 1.0 / (self.Nk * resolution)
-        dk = (2 * np.pi / self.a) * delta_frac
+        dk = (2 * np.pi / self.a * 4 / np.sqrt(2)) * delta_frac
 
         k0 = np.asarray(startk, float)
         #print(f"this the min {E(k0)}")
@@ -354,185 +369,243 @@ class TightBindingHamiltonian:
         principal_masses = eigvals       
 
         return principal_masses
-  
-    #TODO
-    def _bracket_and_bisect(self, k0, v, limit=THREE_KBT_300K,
-                            initial_step=1e-4, k_max=0.5,
-                            max_bisect_iter=32, tol=1e-6):
+    
+    
+    def vectorizedFirstCrossing(self, v, *, limit=THREE_KBT_300K,
+                                n1: int = 150, chunk: int = 16,
+                                parallel: bool = False,
+                                E0_cbm: float | None = None,
+                                E0_vbm: float | None = None):
         """
-        This code is supposed to pinpoint the k point at which cbm has increased by 3kbT. 
-        Right now there is error finding this point. Code needs to work for arbitrary direction 
+        Return the first k along +v/√2 where CBM rises by ≥limit
+        and the first where VBM falls by ≤−limit.
+
+        If E0_cbm / E0_vbm are supplied we skip an extra Γ calculation.
         """
-        
-        base_sigma = self.sigma 
-        
+
         v = np.asarray(v, float)
-        norm = np.linalg.norm(v)
-        print(v, norm)
-        if norm == 0.0:
+        nrm = np.linalg.norm(v)
+        if nrm == 0.0:
             raise ValueError("direction vector v must be non‑zero")
-        v /= norm                          # normalise once
+        v /= nrm
+        k_max = v / np.sqrt(2.0)
 
-        # reference CBM energy at k0
-        E0, _,vbm,_ = self.getBandValues(k=k0)
-        oldCBM = E0
-        oldVBM = vbm
-        
+        # --- reference energies at Γ (if not supplied) ------------------
+        if E0_cbm is None or E0_vbm is None:
+            E0_cbm, _, E0_vbm, _ = self.getBandValues(k=np.zeros(2))
 
-        def energyValues(t):
-            """E0 − E(k0 + t\cdot v)."""
-            cbm,_,vbm,_ = self.getBandValues(k=k0 + t * v)
-            return cbm,vbm
-            
-        t_low, f_low = 0.0, 0.0           # ΔE = 0 at t = 0
-        t = initial_step
-        while t <= k_max:
-            cbm,vbm = energyValues(t)
-            self.sigma += 0.5 * ((cbm - oldCBM) + (vbm - oldVBM))
-            oldCBM = cbm
-            oldVBM = vbm
-    
-            f = cbm - E0
-            if f >= limit:   
-                print(f)          
+        # -- (code identical to your latest version, but uses E0_cbm/E0_vbm) --
+        # design k path
+        t_samples = np.linspace(0.0, 1.0, n1, endpoint=False)
+        k_samples = t_samples[:, None] * k_max
+
+        def _solve_many(k_block):
+            cbms = np.empty(len(k_block))
+            vbms = np.empty(len(k_block))
+            for i, kvec in enumerate(k_block):
+                cbms[i], _, vbms[i], _ = self.getBandValues(kvec)
+            return cbms, vbms
+
+        if parallel:
+            _runner = Parallel(n_jobs=-1, prefer="processes", batch_size=chunk)
+            def _solve_many(k_block):
+                vals = _runner(delayed(self.getBandValues)(k)
+                            for k in k_block)
+                cbms = np.fromiter((x[0] for x in vals), float, len(k_block))
+                vbms = np.fromiter((x[2] for x in vals), float, len(k_block))
+                return cbms, vbms
+
+        first_c, first_v = None, None
+        for start in range(0, n1, chunk):
+            k_block = k_samples[start:start + chunk]
+            cbm_blk, vbm_blk = _solve_many(k_block)
+
+            up_mask   = (cbm_blk - E0_cbm) >= limit
+            down_mask = (vbm_blk - E0_vbm) <= -limit
+
+            if first_c is None and up_mask.any():
+                first_c = k_block[up_mask.argmax()]
+            if first_v is None and down_mask.any():
+                first_v = k_block[down_mask.argmax()]
+            if first_c is not None and first_v is not None:
                 break
-            t_low, f_low = t, f
-            t *= 2                        
-        else:
-            return None                 
 
-        t_high, f_high = t, f       
-        # now close the range 
-        for _ in range(max_bisect_iter):
-            t_mid = 0.5 * (t_low + t_high)
-            cbm,vbm = energyValues(t)
-            self.sigma += 0.5 * ((cbm - oldCBM) + (vbm - oldVBM))
-            oldCBM = cbm
-            oldVBM = vbm
-            f_mid = cbm - E0
+        return {"cbm_cross": first_c, "vbm_cross": first_v}
+    def _fit_paraboloid_H(points):
+        pts  = np.asarray(points, float)
+        k2   = pts[:, 0]**2 + pts[:, 1]**2        # kx² + ky²
+        α    = np.dot(k2, pts[:, 2]) / np.dot(k2, k2)
+        return np.diag([2*α, 2*α])                # H = 2α I (2×2)
 
-            if isclose(f_mid, limit, rel_tol=0, abs_tol=tol):
-                return k0 + t_mid * v
+    def _bracket_and_bisect(self, k0, v, *,
+                            limit: float = THREE_KBT_300K,
+                            initial_step: float = 1e-4,
+                            k_max: float = 0.5,
+                            max_iter: int = 32,
+                            tol: float = 1e-6):
 
-            if f_mid < limit:             # still below the target
-                t_low, f_low = t_mid, f_mid
-            else:
-                t_high, f_high = t_mid, f_mid
-
-        self.sigma = base_sigma
-        return k0 + t_high * v
-    
-    def first_crossing_3kBT(self, k0=np.zeros(2), directions=[[1, 0], [0, 1]],
-                        **kwargs):
-        """
-        For each direction in `directions` (iterable of 2‑D vectors) return the
-        first k‑point where deltaE >= 3kBT.  Yields (v, k_cross) pairs; k_cross is None
-        if the threshold is never reached before hitting the search limit.
-        """
-        k0 = np.asarray(k0, float)
-        for v in directions:
-            yield np.asarray(v, float), self._bracket_and_bisect(k0, v, **kwargs)
-            
-            
-    def calculateNonParabolicEffectiveMass(self,
-        k0=np.asarray([0.0, 0.0]),
-        samplingVectors=[[1, 0], [-1, 0], [0, 1], [0, -1]],
-        step_fraction=0.5,
-        fallback_step=1e-4):
-        """Finds effective mass tensor based on the sampling vectors"""
-        
-        E0, *_ = self.getBandValues(k=k0)
-        crossings = {tuple(v): kc for v, kc in
-                    self.first_crossing_3kBT(k0=k0, directions=samplingVectors)}
-        
-        print(crossings)
-        
-        points = []
-        for direction, kvec in crossings.items():         
-            point = np.concatenate([kvec,                
-                                    [TightBindingHamiltonian.THREE_KBT_300K]])  
-            points.append(point)
+        v = np.asarray(v, float)
+        nrm = np.linalg.norm(v)
+        if nrm == 0.0:
+            raise ValueError("direction vector v must be non‑zero")
+        v /= nrm
 
         
-        
-        points.append(np.asarray([k0[0], k0[1], 0]))      #
+        E0_cbm, _, E0_vbm, _ = self.getBandValues(k=k0)
 
-        points = np.asarray(points, dtype=float)
+        # helpers
+        def eval_edge(t):
+            """Return (cbm, vbm) at k = k0 + t·v."""
+            cbm, _, vbm, _ = self.getBandValues(k=k0 + t * v)
+            return cbm, vbm
 
-        def fit_paraboloid_and_hessian(points, include_linear=True):
+        hi = initial_step
+        cbm_lo = vbm_lo = 0.0
+        cbm_hi = vbm_hi = None   # hi endpoint once bracketed
 
-            pts = np.asarray(points, dtype=float)
-            kx, ky, E = pts.T
+        while hi <= k_max and (cbm_hi is None or vbm_hi is None):
+            cbm, vbm = eval_edge(hi)
 
-            if include_linear:
-                A = np.column_stack([kx**2 + ky**2, kx, ky, np.ones_like(kx)])
-                alpha, beta_x, beta_y, E0 = np.linalg.lstsq(A, E, rcond=None)[0]
-            else:
-                A = np.column_stack([kx**2 + ky**2, np.ones_like(kx)])
-                alpha, E0 = np.linalg.lstsq(A, E, rcond=None)[0]
-                beta_x = beta_y = 0.0
+            if cbm_hi is None and cbm - E0_cbm >= limit:
+                cbm_hi = hi
+            if vbm_hi is None and E0_vbm - vbm >= limit:
+                vbm_hi = hi
 
-            H = np.array([[2*alpha, 0.0],
-                        [0.0,     2*alpha]])
+            if cbm_hi is None: cbm_lo = hi
+            if vbm_hi is None: vbm_lo = hi
+            hi *= 2.0
 
-            return H
+        k_cbm = k_vbm = None
+        if cbm_hi is None and vbm_hi is None:
+            # neither edge reached the threshold within k_max
+            return {'cbm_cross': None, 'vbm_cross': None}
 
-        H = fit_paraboloid_and_hessian(points) 
-        
-        
-        H_J = H * spc.e / (2 * np.pi / self.a)**2
-        mstar_SI = spc.hbar**2 * np.linalg.inv(H_J)
-        mstar_me = mstar_SI / spc.m_e
-        eigvals, eigvecs = np.linalg.eigh(mstar_me)  
-        principal_masses = eigvals       
+        if cbm_hi is not None:
+            lo, hi = cbm_lo, cbm_hi
+            for _ in range(max_iter):
+                mid = 0.5 * (lo + hi)
+                cbm_mid, _ = eval_edge(mid)
+                err = cbm_mid - E0_cbm - limit
+                if isclose(err, 0.0, abs_tol=tol):
+                    break
+                lo, hi = (mid, hi) if err < 0 else (lo, mid)
+            k_cbm = k0 + mid * v
 
-        return principal_masses
-            
-       
-    
-    def getBandValues(self, k, earlierk = np.asarray([0,0]), tol=1e-9): 
-        """Redundant method (analyzeEnergyRange exists) that does not expand range or sigma - better for larger systems  
-        for energy range but also gives cbm - test with PT to make it more effecient 
-        
-        1. test if cbm exists in range 
-        2. if so return, if not half k point and do 1
-        3. if so use pt theory to find expected delta E cbm and vbm from doubling k 
-        4. modify sigma and go back to original k point
-        5. make sigma back to original value and return valid cbm/vbm values
-        """
-      
-        sigma     = self.sigma
-        eigRange  = self.eigenRange
   
-        evals, evecs = self._sparse_eval(np.asarray(k, float), sigma, eigRange)
-        evals -= np.float64(sigma)
+        if vbm_hi is not None:
+            lo, hi = vbm_lo, vbm_hi
+            for _ in range(max_iter):
+                mid = 0.5 * (lo + hi)
+                _, vbm_mid = eval_edge(mid)
+                err = E0_vbm - vbm_mid - limit
+                if isclose(err, 0.0, abs_tol=tol):
+                    break
+                lo, hi = (mid, hi) if err < 0 else (lo, mid)
+            k_vbm = k0 + mid * v
 
-        pos = np.where(evals >  tol)[0]
-        if pos.size == 0:
+        return {'cbm_cross': k_cbm, 'vbm_cross': k_vbm}
+ 
+    def calculateNonParabolicEffectiveMass(self,
+                                        k0=np.zeros(2),
+                                        *, band='conduction',
+                                        limit=THREE_KBT_300K,
+                                        symmetry: bool = True,
+                                        verbose: bool = False):
+        """
+        Five‑point effective mass from a ΔE paraboloid fit.
+
+        If `symmetry=True` we exploit the xy isotropy
+        giving the required 4 + 1 points with a single crossing search.
+        """
+        E0_cbm, _, E0_vbm, _ = self.getBandValues(k=np.zeros(2))
+
+        pts = []                              
+
+        if symmetry:
+            # ---- single crossing along +x --------------------------------
+            cross_dict = self._bracket_and_bisect(k0=np.zeros(2), v=[1,0])
+
+            k_cross = cross_dict['cbm_cross'] if band == 'conduction' \
+                    else           cross_dict['vbm_cross']
+
+            if k_cross is None:
+                raise RuntimeError(f"No {band} crossing found along (1,0)")
+
+            dk  = k_cross - k0
+            r   = abs(dk[0])                
+
+       
+            pts.extend([[+r, 0, limit],
+                        [-r, 0, limit],
+                        [0, +r, limit],
+                        [0, -r, limit]])
+            print(pts)
+
+            if verbose:
+                direc = 'CBM' if band == 'conduction' else 'VBM'
+                print(f"{direc} ΔE={limit:.3g} eV at |dk| = {r:.4e} (symmetry applied)")
+
+        else:
+            # ---- explicit ±x ±y evaluation -------------------------------
+            directions = ((1,0), (-1,0), (0,1), (0,-1))
+            for v in directions:
+                cd = self._bracket_and_bisect(k0=np.zeros(2), v=v)
+                k_cross = cd['cbm_cross'] if band == 'conduction' else cd['vbm_cross']
+                if k_cross is None:
+                    raise RuntimeError(f"No {band} crossing found along {v}")
+
+                dk = k_cross - k0
+                pts.append([dk[0], dk[1], limit])
+
+                if verbose:
+                    print(f"{band} cross {v}: k = {k_cross}, |dk| = {np.linalg.norm(dk):.3e}")
+
+
+        pts.append([0.0, 0.0, 0.0])
+        H = TightBindingHamiltonian._fit_paraboloid_H(pts)
+
+        dk_dq = (2 * np.pi / self.a) * (4 / np.sqrt(2))   
+        H_J   = H * spc.e / dk_dq**2
+        mstar = spc.hbar**2 * np.linalg.inv(H_J) / spc.m_e
+        return np.sort(np.linalg.eigvalsh(mstar))
+   
             
-            
-            raise RuntimeError(
-                f"No positive eigenvalue found at k={k} "
-                f"(sigma={sigma}, eigRange={eigRange}). "
-                "Increase eigRange or adjust sigma."
-            )
-        cbm_idx  = pos[0]
-        cbm_E    = float(evals[cbm_idx])
-        cbm_vec  = evecs[:, cbm_idx]
+    def getBandValues(self, k: NDArray[np.float64], tol: float = 1e-9):
+        """This method doesn't change sigma and finds the energy values using first order perturbation theory"""
+        def _band_edges(evals: NDArray, vecs: NDArray):
+            """Extract CBM/VBM from *shifted* eigenvalues `evals`."""
+            pos_mask = evals >  tol         
+            neg_mask = evals < -tol
+            if not (pos_mask.any() and neg_mask.any()):
+                raise RuntimeError("eigenRange must straddle the band gap")
 
-        neg = np.where(evals < -tol)[0]
-        if neg.size == 0:
-            raise RuntimeError(
-                f"No negative eigenvalue found at k={k} "
-                f"(sigma={sigma}, eigRange={eigRange}). "
-                "Increase eigRange or adjust sigma."
-            )
-        vbm_idx  = neg[-1]
-        vbm_E    = float(evals[vbm_idx])
-        vbm_vec  = evecs[:, vbm_idx]
+            cbm_idx = pos_mask.argmax()               
+            vbm_idx = len(evals) - 1 - neg_mask[::-1].argmax()  
+            return (float(evals[cbm_idx]), vecs[:, cbm_idx],
+                    float(evals[vbm_idx]), vecs[:, vbm_idx])
 
-        return cbm_E + np.float64(sigma), cbm_vec, vbm_E + np.float64(sigma), vbm_vec
-    
+        base_sigma = self.sigma        
+        eig_range  = self.eigenRange
+
+        try:
+            # gamma point
+            evals_g, vecs_g = self._sparse_eval(np.zeros(2), base_sigma, eig_range)
+            cbmE_g, cbmV_g, vbmE_g, vbmV_g = _band_edges(evals_g - base_sigma,
+                                                        vecs_g)
+
+            self.modifySigmaForDeltaK(np.zeros(2), k,
+                                    cbmE_g + base_sigma, cbmV_g,
+                                    vbmE_g + base_sigma, vbmV_g)
+
+            # target k 
+            sigma = self.sigma        
+            evals_k, vecs_k = self._sparse_eval(k, sigma, eig_range)
+            cbmE_k, cbmV_k, vbmE_k, vbmV_k = _band_edges(evals_k - sigma, vecs_k)
+
+            return np.real(cbmE_k + sigma), cbmV_k, np.real(vbmE_k + sigma), vbmV_k
+
+        finally:
+            self.setBaseSigma()
     
     def getCBM(self, k = np.asarray([0,0])):
         cbm,_,_,_ = self.getBandValues(k)
@@ -579,30 +652,36 @@ class TightBindingHamiltonian:
         A = np.diag(V_diag) - np.diag(V_diag2)
         #
         return A
-    def modifySigmaForVoltage(self, cbmEv,cbmVec, vbmEv, vbmVec):
-        """This function uses perturbation theory to guess the sigma for the sparse solver"""
-        
-        potMatrix = self.getChangeInVoltage()
-        
-        delta1 = np.conjugate(cbmVec) @ potMatrix @ cbmVec
-        delta2 = np.conjugate(vbmVec) @ potMatrix @ vbmVec
-        
+    def modifySigmaDeltaH(self, deltaH,cbmEv,cbmVec, vbmEv, vbmVec):
+        """PT method to change sigma values"""
+        delta1 = np.conjugate(cbmVec) @ deltaH @ cbmVec
+        delta2 = np.conjugate(vbmVec) @ deltaH @ vbmVec
         cbmEv, vbmEv = cbmEv + delta1, vbmEv + delta2
         self.sigma = 0.5 * (cbmEv + vbmEv)
+        
+    
+    def modifySigmaForVoltage(self, cbmEv,cbmVec, vbmEv, vbmVec):
+
+        
+        potMatrix = self.getChangeInVoltage()
+        self.modifySigmaDeltaH(potMatrix,cbmEv,cbmVec, vbmEv, vbmVec)
         
     def modifySigmaForDeltaK(self,k0,deltak,cbmEv,cbmVec, vbmEv, vbmVec):
         Ap = self.create_tight_binding(k0 + deltak,getMatrix=True)
-        A0 = self.create_tight_binding(k0)
+        A0 = self.create_tight_binding(k0,getMatrix=True)
         deltaA = Ap - A0
-        delta1 = np.conjugate(cbmVec) @ deltaA @ cbmVec
-        delta2 = np.conjugate(vbmVec) @ deltaA @ vbmVec
+        self.modifySigmaDeltaH(deltaA,cbmEv,cbmVec, vbmEv, vbmVec)
         
-        cbmEv, vbmEv = cbmEv + delta1, vbmEv + delta2
-        self.sigma = 0.5 * (cbmEv + vbmEv)
+
+    def calculateFermiEnergy(self):
+        m1 = self.calculateNonParabolicEffectiveMass(
+             k0=[0,0], band='valence', symmetry=True)[0]
+        m2 = self.calculateNonParabolicEffectiveMass(
+             k0=[0,0], band='conduction', symmetry=True)[0]
+        cbm,cbmVec, vbm, vbmVec = self.getBandValues(np.zeros(2))
+        return 0.5 * (cbm + vbm) + 3 / 4 * TightBindingHamiltonian.THREE_KBT_300K * np.log(m1 / m2)
         
-        
+                
     
         
         
-     
-      
