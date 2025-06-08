@@ -511,12 +511,6 @@ class TightBindingHamiltonian:
                                         limit=THREE_KBT_300K,
                                         symmetry: bool = True,
                                         verbose: bool = False):
-        """
-        Five‑point effective mass from a ΔE paraboloid fit.
-
-        If `symmetry=True` we exploit the xy isotropy
-        giving the required 4 + 1 points with a single crossing search.
-        """
         E0_cbm, _, E0_vbm, _ = self.getBandValues(k=np.zeros(2))
 
         pts = []                              
