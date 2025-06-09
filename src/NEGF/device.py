@@ -19,8 +19,8 @@ class Device:
         # device parameters
         self.channel_length = 10e-9
         self.channel_thickness = 3e-9
-        self.unitX = self.channel_length // self.block_width
-        self.unitZ = self.channel_thickness // self.block_height
+        self.unitX = int(self.channel_length // self.block_width)
+        self.unitZ = int(self.channel_thickness // self.block_height)
         
         # voltage 
         self.VG = 0

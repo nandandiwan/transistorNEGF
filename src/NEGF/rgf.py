@@ -1,6 +1,11 @@
 from device import Device
 import hamiltonian
 import numpy as np
+import numba
+from scipy.linalg import lu_factor, lu_solve
+
+
+
 class GreensFunction:
     def __init__(self, device_state : Device):
         self.ds = device_state
@@ -17,8 +22,8 @@ class GreensFunction:
         H10 = dagger(H01)
 
         # Surface Green's functions at left and right leads
-        G_surf_left = self.surface_gf(E - self.ds.Vs[0] / self.ds.q, H00, H10) # units are in ev
-        G_surf_right = self.surface_gf(E - self.ds.Vd[-1] / self.ds.q, H00, H10)
+        G_surf_left = self.surface_gf(E - self.ds.Vs, H00, H10) # units are in ev
+        G_surf_right = self.surface_gf(E - self.ds.Vd, H00, H10)
 
         # Self-energy calculation (Σ = τ g τ†)
         sigma_left = H01 @ G_surf_left @ H10
@@ -44,7 +49,7 @@ class GreensFunction:
         err = 1.0
 
         while err > tol:
-            inv_E = np.linalg.inv(Energy * I - epsilon)
+            inv_E = np.linalg.solve(Energy * I - epsilon, I)
             epsilon_s_new = epsilon_s + alpha @ inv_E @ beta
             epsilon_new = epsilon + beta @ inv_E @ alpha + alpha @ inv_E @ beta
             alpha_new = alpha @ inv_E @ alpha
@@ -55,8 +60,8 @@ class GreensFunction:
             epsilon_s, epsilon, alpha, beta = epsilon_s_new, epsilon_new, alpha_new, beta_new
 
         return np.linalg.inv(Energy * I - epsilon_s)
-    def fermi(x, mu):
-        return 1 / (1 + np.exp(x - mu))
+    def fermi(x):
+        return 1 / (1 + np.exp(x))
     def rgf(self, E,ky : float): 
         """
         This recursively calcuates the green's function (retarded and lesser) as well
@@ -110,7 +115,7 @@ class GreensFunction:
             prev         = (i - 1) * block_size
 
             if i == 0:                                   # first block
-                g_0_r = np.linalg.solve(A[start:end, start:end], I_blk)
+                g_0_r = np.linalg.inv(A[start:end, start:end])
                 g_R_blocks[0] = g_0_r
                 g_lesser_blocks[0] = g_0_r @ self_energy_lesser[start:end, start:end] @ dagger(g_0_r)
             else:
@@ -120,7 +125,7 @@ class GreensFunction:
                     @ g_R_blocks[i - 1]
                     @ A[prev:start, start:end]
                 )
-                g_i_r = np.linalg.solve(H_eff, I_blk)
+                g_i_r = np.linalg.inv(H_eff)
                 g_R_blocks[i] = g_i_r
 
                 sigma_lesser = (
