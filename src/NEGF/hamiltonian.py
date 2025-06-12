@@ -7,6 +7,7 @@ if project_root not in sys.path:
 from NEGF_unit_generation import UnitCell 
 from src.tight_binding import tight_binding_params as TBP
 import numpy as np
+import scipy.sparse as sp
 
 class Hamiltonian:
     def __init__(self, Nx, Nz):
@@ -58,7 +59,7 @@ class Hamiltonian:
             atomToIndex[atom] = atom_index
             indexToAtom[atom_index] = atom
         
-        
+    
     
         for atom_idx, atom in indexToAtom.items():
             hybridizationMatrix = self.H_sp3_explicit.copy() 
@@ -71,7 +72,7 @@ class Hamiltonian:
             A[atom_idx*10:atom_idx*10 + 4, atom_idx*10:atom_idx*10 + 4] = onsiteMatrix
             A[atom_idx*10 + 4:atom_idx*10 + 9, atom_idx*10 + 4:atom_idx*10 + 9] = np.eye(5) * TBP.E['dxy']
             A[atom_idx*10 + 9,atom_idx*10 + 9] = TBP.E['s*']
-            A[atom_idx * 10: atom_idx *10 +10, atom_idx * 10: atom_idx *10 +10] += np.eye(10) #* self.unitCell.ATOM_POTENTIAL[atom]
+         
     
         for atom_index in range(numSilicon):
             atom = indexToAtom[atom_index]
@@ -95,11 +96,194 @@ class Hamiltonian:
             
         return A
     
-    def get_H00_H01(self, ky):
+    def get_H00_H01(self, ky, sparse=False):
         oldUnitCell = self.unitCell
         self.unitCell = UnitCell(self.Nz, 2)
-        HT = self.create_tight_binding(ky)
+        if not sparse:
+            HT = self.create_tight_binding(ky)
+        else:
+            HT = self.create_sparse_hamlitonian(ky)
         H00 = HT[:80 * self.Nz, :80 * self.Nz]
         H01 = HT[80 * self.Nz:, :80 * self.Nz]
         self.unitCell = oldUnitCell
         return H00, H01
+    
+    def getMatrixSize(self):
+        return len(self.unitCell.ATOM_POSITIONS) * 10
+    
+    def create_sparse_hamlitonian(self, ky):
+        unitNeighbors = self.unitCell.neighbors
+        danglingBonds = self.unitCell.danglingBondsZ
+        numSilicon = len(unitNeighbors.keys())
+
+        orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
+        numOrbitals = len(orbitals)
+        size = numSilicon * numOrbitals 
+        A = np.zeros((size, size), dtype=complex)    
+        
+        atomToIndex = {}
+        indexToAtom = {}
+        for atom_index,atom in enumerate(unitNeighbors):
+            atomToIndex[atom] = atom_index
+            indexToAtom[atom_index] = atom
+        
+        
+        
+        numSilicon = len(unitNeighbors.keys())
+
+        orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
+        numOrbitals = len(orbitals)
+        size = numSilicon * numOrbitals 
+        
+        atomToIndex = {}
+        indexToAtom = {}
+        for atom_index,atom in enumerate(unitNeighbors):
+            atomToIndex[atom] = atom_index
+            indexToAtom[atom_index] = atom
+
+        rows, cols, data = [], [], []                   # <-- sparse triplets
+
+        # helper -----------------------------------------------------------
+        def add(i, j, val):
+            if val != 0.0:
+                rows.append(i); cols.append(j); data.append(val)
+                if i != j:                              # Hermitian
+                    rows.append(j); cols.append(i); data.append(np.conj(val))
+        # ------------------------------------------------------------------
+
+        # ---------- on‑site (Si) ----------
+        
+        for atom_idx, atom in indexToAtom.items():
+
+            hybridizationMatrix = self.H_sp3_explicit.copy() 
+            danglingBondsList = danglingBonds[atom]
+            for danglingBondAtom, position in danglingBondsList:
+                hybridizationMatrix[position,position] += TBP.E['sp3']            
+            
+            # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
+        
+            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T 
+            base = atom_idx * numOrbitals
+            for i in range(4):
+                for j in range(i ,4):
+                    add(base + i, base + j, onsiteMatrix[i,j])
+        
+            for p in range(4, 9):                       # five d’s
+                add(base + p, base + p, TBP.E['dxy'] )
+            add(base + 9, base + 9, TBP.E['s*'])
+        
+    
+        for atom_index, atom in indexToAtom.items():
+            base_i = atom_index * numOrbitals
+            for atom2, delta, l,m,n in unitNeighbors[atom]:
+                j = atomToIndex[atom2]
+                if j < atom_index:             
+                    continue                   
+
+                phase = np.exp(2j*np.pi*(ky*delta[1]))
+
+                for o1, orb1 in enumerate(orbitals):
+                    for o2, orb2 in enumerate(orbitals):
+                        hop = TBP.SK[(orb1, orb2)](l, m, n, TBP.V) * phase
+                        add(base_i + o1, j*numOrbitals + o2, hop)
+
+                
+    
+        H = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsr()
+
+        return H
+    
+    def create_sparse_channel_hamlitonian(self, ky):
+        unitNeighbors = self.unitCell.neighbors
+        danglingBonds = self.unitCell.danglingBondsZ
+        numSilicon = len(unitNeighbors.keys())
+
+        orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
+        numOrbitals = len(orbitals)
+        size = numSilicon * numOrbitals 
+        A = np.zeros((size, size), dtype=complex)    
+        
+        atomToIndex = {}
+        indexToAtom = {}
+        for atom_index,atom in enumerate(unitNeighbors):
+            atomToIndex[atom] = atom_index
+            indexToAtom[atom_index] = atom
+        
+
+        numSilicon = len(unitNeighbors.keys())
+
+        orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
+        numOrbitals = len(orbitals)
+        size = numSilicon * numOrbitals 
+        
+        atomToIndex = {}
+        indexToAtom = {}
+        for atom_index,atom in enumerate(unitNeighbors):
+            atomToIndex[atom] = atom_index
+            indexToAtom[atom_index] = atom
+
+        rows, cols, data = [], [], []                   # <-- sparse triplets
+
+        # helper -----------------------------------------------------------
+        def add(i, j, val):
+            if val != 0.0:
+                rows.append(i); cols.append(j); data.append(val)
+                if i != j:                              # Hermitian
+                    rows.append(j); cols.append(i); data.append(np.conj(val))
+        # ------------------------------------------------------------------
+
+        # ---------- on‑site (Si) ----------
+        
+        for atom_idx, atom in indexToAtom.items():
+
+            hybridizationMatrix = self.H_sp3_explicit.copy() 
+            danglingBondsList = danglingBonds[atom]
+            for danglingBondAtom, position in danglingBondsList:
+                hybridizationMatrix[position,position] += TBP.E['sp3']            
+            
+            # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
+        
+            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T 
+            base = atom_idx * numOrbitals
+            for i in range(4):
+                for j in range(i ,4):
+                    add(base + i, base + j, onsiteMatrix[i,j])
+        
+            for p in range(4, 9):                       # five d’s
+                add(base + p, base + p, TBP.E['dxy'] )
+            add(base + 9, base + 9, TBP.E['s*'])
+        
+    
+        for atom_index, atom in indexToAtom.items():
+            base_i = atom_index * numOrbitals
+            for atom2, delta, l,m,n in unitNeighbors[atom]:
+                j = atomToIndex[atom2]
+                if j < atom_index:             
+                    continue                   
+
+                phase = np.exp(2j*np.pi*(ky*delta[1]))
+
+                for o1, orb1 in enumerate(orbitals):
+                    for o2, orb2 in enumerate(orbitals):
+                        hop = TBP.SK[(orb1, orb2)](l, m, n, TBP.V) * phase
+                        add(base_i + o1, j*numOrbitals + o2, hop)
+
+                
+    
+        H = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsr()
+        
+        total_size = H.shape[0]
+        block_size = self.Nz * 80
+        num_blocks = (int) (total_size // block_size)
+        diagonal_blocks = [None] * num_blocks
+        off_diagonal_blocks = [None] * (num_blocks - 1)
+        
+        for block in range(0, num_blocks - 1):
+            s = block * block_size
+            m = (block + 1) * block_size
+            e = (block + 2) * block_size
+            diagonal_blocks[block] = H[s : m, s : m] 
+            off_diagonal_blocks = H[m : e, m : e]
+        diagonal_blocks[-1] = H[-block_size:, -block_size:]       
+
+        return diagonal_blocks, off_diagonal_blocks

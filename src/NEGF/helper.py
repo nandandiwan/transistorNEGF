@@ -1,5 +1,8 @@
 import numpy as np
 from scipy.sparse import csr_matrix, csc_matrix
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import splu
 import numpy as np
 class Helper_functions:
     
@@ -68,3 +71,42 @@ class Helper_functions:
 
         return diag
 
+
+
+    def sparse_inverse(A):
+        """
+        Calculates the exact, dense inverse of a sparse matrix A.
+
+        This is done efficiently by first computing the LU decomposition of A
+        and then solving the system A @ X = I for X, where I is the identity
+        matrix.
+
+        Args:
+            A (sparse matrix): A sparse matrix (e.g., in CSR or CSC format)
+                            that is invertible.
+
+        Returns:
+            numpy.ndarray: The dense numpy array representing the inverse of A.
+        """
+        if not sp.issparse(A):
+            # Fallback for dense matrices
+            return np.linalg.solve(A, np.eye(A.shape[0]))
+
+        # splu performs best with CSC format
+        A_csc = A.tocsc()
+
+        # Compute the LU decomposition
+        lu_solver = splu(A_csc)
+
+        # Create a dense identity matrix
+        N = A.shape[0]
+        identity = np.eye(N, dtype=A.dtype)
+
+        # Use the solver to find the inverse by solving for the identity matrix
+        inverse_matrix = lu_solver.solve(identity)
+
+        return inverse_matrix
+
+            
+        
+        

@@ -3,6 +3,10 @@ import hamiltonian
 import numpy as np
 import numba
 from scipy.linalg import lu_factor, lu_solve
+from scipy.sparse import csc_matrix, csr_matrix
+from helper import Helper_functions
+
+from scipy.sparse.linalg import spsolve
 
 
 
@@ -10,32 +14,33 @@ class GreensFunction:
     def __init__(self, device_state : Device):
         self.ds = device_state
         self.eta = 1e-12j
-    
-    def self_energy(self, E, ky):
+        
+
+    def self_energy(self, E, ky, tol=1e-6):
         """
         This method creates the self energy terms based on the coupling and surface green's function 
         """
         dagger = lambda A: A.conj().T
         
         # Coupling matrices
-        H00, H01 = self.ds.hamiltonian.get_H00_H01(ky)
+        H00, H01 = self.ds.hamiltonian.get_H00_H01(ky, sparse=True)
         H10 = dagger(H01)
 
         # Surface Green's functions at left and right leads
-        G_surf_left = self.surface_gf(E - self.ds.Vs, H00, H10) # units are in ev
-        G_surf_right = self.surface_gf(E - self.ds.Vd, H00, H10)
+        G_surf_left = self.surface_gf(E - self.ds.Vs, H00, H10, tol) # units are in ev
+        G_surf_right = self.surface_gf(E - self.ds.Vd, H00, H10, tol)
 
         # Self-energy calculation (Σ = τ g τ†)
         sigma_left = H01 @ G_surf_left @ H10
         sigma_right = H10 @ G_surf_right @ H01
 
         return sigma_left, sigma_right
-    def surface_gf(self, Energy, H00 : np.ndarray, H10: np.ndarray, tol=1e-6): 
+    def surface_gf(self, Energy, H00, H10, tol=1e-6): 
         """ 
         This iteratively calculates the surface green's function for the lead based. 
         Although it is tested for 1D, it should be good for 2D surfaces. 
         """
-        device_state = self.ds
+
         Energy = Energy
         dagger = lambda A: np.conjugate(A.T)
         
@@ -47,9 +52,16 @@ class GreensFunction:
         alpha = H01.copy()
         beta = dagger(H10).copy()
         err = 1.0
+        first_time = True
 
         while err > tol:
-            inv_E = np.linalg.solve(Energy * I - epsilon, I)
+            if first_time:
+                inv_E = Helper_functions.sparse_inverse(csr_matrix(Energy * I) - csr_matrix(epsilon))
+                first_time = False
+            else:
+
+                inv_E = np.linalg.solve(Energy * I - epsilon, I)
+        
             epsilon_s_new = epsilon_s + alpha @ inv_E @ beta
             epsilon_new = epsilon + beta @ inv_E @ alpha + alpha @ inv_E @ beta
             alpha_new = alpha @ inv_E @ alpha
@@ -59,10 +71,12 @@ class GreensFunction:
 
             epsilon_s, epsilon, alpha, beta = epsilon_s_new, epsilon_new, alpha_new, beta_new
 
-        return np.linalg.inv(Energy * I - epsilon_s)
+        return  np.linalg.solve(Energy * I - epsilon_s, I)
     def fermi(x):
         return 1 / (1 + np.exp(x))
-    def rgf(self, E,ky : float): 
+    
+    
+    def rgf(self, E,ky : float, self_energy_tol = 1e-6): 
         """
         This recursively calcuates the green's function (retarded and lesser) as well
         as matrix elements 1 off from diagonal. Output is a 1d array corresponding to diagonal 
@@ -76,7 +90,7 @@ class GreensFunction:
         f_d = GreensFunction.fermi(-ds.q * (E - ds.Vd) / (ds.kbT))
         fermi = lambda x,y: 1 / (1 + np.exp((x-y) / (ds.kbT  /ds.q)))
         
-        sigmaL,sigmaR = self.self_energy(E,ky)
+        sigmaL,sigmaR = self.self_energy(E,ky,self_energy_tol)
         self_energy_right = np.zeros_like(H, dtype=complex)
         self_energy_left = np.zeros_like(H, dtype=complex)
         
@@ -91,7 +105,7 @@ class GreensFunction:
         
         sigma_less_left = gamma1 * f_s
         sigma_less_right = gamma2 * f_d
-        block_size = 10
+        block_size = sigmaL.shape[0]
         gamma1 = 1j * (self_energy_left  - dagger(self_energy_left))
         gamma2 = 1j * (self_energy_right - dagger(self_energy_right))
         self_energy_lesser = gamma1 * f_s + gamma2 * f_d
@@ -115,7 +129,7 @@ class GreensFunction:
             prev         = (i - 1) * block_size
 
             if i == 0:                                   # first block
-                g_0_r = np.linalg.inv(A[start:end, start:end])
+                g_0_r = np.linalg.solve(A[start:end, start:end], I_blk)
                 g_R_blocks[0] = g_0_r
                 g_lesser_blocks[0] = g_0_r @ self_energy_lesser[start:end, start:end] @ dagger(g_0_r)
             else:
@@ -125,7 +139,7 @@ class GreensFunction:
                     @ g_R_blocks[i - 1]
                     @ A[prev:start, start:end]
                 )
-                g_i_r = np.linalg.inv(H_eff)
+                g_i_r = np.linalg.solve(H_eff, I_blk)
                 g_R_blocks[i] = g_i_r
 
                 sigma_lesser = (
@@ -193,3 +207,204 @@ class GreensFunction:
         G_lesser_diag = np.concatenate([np.diag(b) for b in G_lesser], dtype=complex)
         
         return G_R_diag, G_lesser_diag, gamma1, gamma2, sigma_less_left, sigma_less_right
+    
+    
+    def sparse_rgf(self, E, ky : float, self_energy_tol = 1e-6): 
+        """
+        This recursively calcuates the green's function (retarded and lesser) as well
+        as matrix elements 1 off from diagonal. Output is a 1d array corresponding to diagonal 
+        elements of matrix. 
+        """
+        from scipy.sparse import csc_matrix
+        from scipy.sparse.linalg import spsolve
+        E = E + self.eta
+        ds = self.ds
+        dagger = lambda A: np.conjugate(A.T)
+        # Get sparse channel Hamiltonian blocks (diagonal and off‑diagonal)
+        diagonal_blocks, off_diagonal_blocks = self.ds.hamiltonian.create_sparse_channel_hamlitonian(ky)
+        print("finished hamiltonian construction")
+        num_blocks = len(diagonal_blocks)
+        
+        # Compute lead self energies (dense)
+        sigmaL, sigmaR = self.self_energy(E, ky, tol=self_energy_tol)
+        print("finished self energy")
+        block_size = sigmaL.shape[0]
+        
+        f_s = GreensFunction.fermi(-ds.q * (E - ds.Vs) / (ds.kbT))
+        f_d = GreensFunction.fermi(-ds.q * (E - ds.Vd) / (ds.kbT))
+        
+        gamma1 = 1j * (sigmaL - dagger(sigmaL))
+        gamma2 = 1j * (sigmaR - dagger(sigmaR))
+        
+        # Build self-energy lesser per block: only first and last blocks receive lead contributions
+        self_energy_lesser_blocks = [np.zeros((block_size, block_size), dtype=complex) for _ in range(num_blocks)]
+        self_energy_lesser_blocks[0] = gamma1 * f_s
+        self_energy_lesser_blocks[-1] = gamma2 * f_d
+        
+        # Build effective onsite matrices per block: A_i = E·I - H_dense (subtract lead self energies on boundaries)
+        A_blocks = []
+        for i in range(num_blocks):
+            # Convert sparse diagonal block to dense
+            H_dense = diagonal_blocks[i].toarray()
+            A_i = E * np.eye(H_dense.shape[0], dtype=complex) - H_dense
+            if i == 0:
+                A_i -= sigmaL
+            if i == num_blocks - 1:
+                A_i -= sigmaR
+            A_blocks.append(A_i)
+        
+        # Forward propagation: compute g_R and g_lesser for each block
+        g_R_blocks = []
+        g_lesser_blocks = []
+        I_blk = np.eye(block_size, dtype=complex)
+        # Block 0 - use spsolve for inversion column‐by‐column
+        g_r = np.linalg.solve(A_blocks[0], I_blk)
+        g_R_blocks.append(g_r)
+        g_lesser = g_r @ self_energy_lesser_blocks[0] @ dagger(g_r)
+        g_lesser_blocks.append(g_lesser)
+        
+        # For blocks 1 ... (num_blocks-1)
+        for i in range(1, num_blocks):
+            B = off_diagonal_blocks[i-1].toarray()  # coupling from block (i-1) to i
+            A_eff = A_blocks[i] - B @ g_R_blocks[i-1] @ dagger(B)
+            # Use spsolve for inversion
+            if i == num_blocks - 1:
+                g_r = np.column_stack([spsolve(csc_matrix(A_eff), I_blk[:, j]) for j in range(block_size)])
+            else:
+                g_r = np.linalg.solve(A_eff, I_blk)
+                
+            g_R_blocks.append(g_r)
+            sigma_less = self_energy_lesser_blocks[i] + B @ g_lesser_blocks[i-1] @ dagger(B)
+            g_lesser = g_r @ sigma_less @ dagger(g_r)
+            g_lesser_blocks.append(g_lesser)
+        print("finished forward")
+        # Backward propagation: incorporate non-local corrections (reversed loop kept as before)
+        G_R = [None] * num_blocks
+        
+        
+        G_R_1 = [None] * (num_blocks - 1)
+        G_lesser = [None] * num_blocks
+        G_lesser_1 = [None] * (num_blocks - 1)
+        G_R[-1] = g_R_blocks[-1]
+        G_lesser[-1] = g_lesser_blocks[-1]
+        
+        for i in reversed(range(num_blocks - 1)):
+
+            G_R[i] = g_R_blocks[i] @ (
+                I_blk
+                + A_blocks[i][0:block_size, 0:block_size] @ G_R[i + 1] @ A_blocks[i][0:block_size, 0:block_size] @ g_R_blocks[i]
+            )
+            G_R_1[i] = -G_R[i + 1] @ A_blocks[i][0:block_size, 0:block_size] @ g_R_blocks[i]
+
+            gr0 = g_R_blocks[i]            
+            ga0 = dagger(gr0)
+            gr1 = g_R_blocks[i + 1]       
+            ga1 = dagger(gr1)
+
+            # For simplicity, using the onsite self-energy terms from forward propagation
+            gqq1 = gr0 @ self_energy_lesser_blocks[i] @ ga1
+            gq1q = gr1 @ self_energy_lesser_blocks[i] @ ga0
+
+            G_i_lesser = (
+                g_lesser_blocks[i]
+                + g_R_blocks[i]
+                @ (A_blocks[i][0:block_size, 0:block_size] @ G_lesser[i + 1] @ dagger(A_blocks[i][0:block_size, 0:block_size]))
+                @ dagger(g_R_blocks[i])
+                - (g_lesser_blocks[i] @ A_blocks[i][0:block_size, 0:block_size] @ dagger(G_R_1[i].T)
+                + G_R_1[i].T @ A_blocks[i][0:block_size, 0:block_size] @ g_lesser_blocks[i])
+                - (gqq1 @ dagger(A_blocks[i][0:block_size, 0:block_size]) @ dagger(G_R[i])
+                + G_R[i] @ A_blocks[i][0:block_size, 0:block_size]     @ gq1q)
+            )
+            G_lesser[i] = G_i_lesser
+
+            G_i_lesser_1 = (
+                gq1q
+                - G_R_1[i] @ A_blocks[i][0:block_size, 0:block_size] @ gq1q
+                - G_R[i + 1] @ A_blocks[i][0:block_size, 0:block_size] @ g_lesser_blocks[i]
+                - G_lesser[i + 1] @ dagger(A_blocks[i][0:block_size, 0:block_size]) @ dagger(g_R_blocks[i])
+            )
+            G_lesser_1[i] = G_i_lesser_1[0]
+        
+        G_R_diag     = np.concatenate([np.diag(block) for block in G_R])
+        G_lesser_diag = np.concatenate([np.diag(block) for block in G_lesser])
+        print("finished backward")
+        return G_R_diag, G_lesser_diag, gamma1, gamma2, sigmaL, sigmaR
+    
+    def sparse_rgf_G_R(self, E, ky : float, self_energy_tol=1e-4):
+        
+        """
+        This recursively calcuates the green's function (retarded and lesser) as well
+        as matrix elements 1 off from diagonal. Output is a 1d array corresponding to diagonal 
+        elements of matrix. 
+        """
+        from scipy.sparse import csc_matrix
+        from scipy.sparse.linalg import spsolve
+        E = E + self.eta
+        ds = self.ds
+        dagger = lambda A: np.conjugate(A.T)
+        # Get sparse channel Hamiltonian blocks (diagonal and off‑diagonal)
+        diagonal_blocks, off_diagonal_blocks = self.ds.hamiltonian.create_sparse_channel_hamlitonian(ky)
+        
+        num_blocks = len(diagonal_blocks)
+        
+        # Compute lead self energies (dense)
+        sigmaL, sigmaR = self.self_energy(E, ky, tol=self_energy_tol)
+ 
+        block_size = sigmaL.shape[0]
+        
+        f_s = GreensFunction.fermi(-ds.q * (E - ds.Vs) / (ds.kbT))
+        f_d = GreensFunction.fermi(-ds.q * (E - ds.Vd) / (ds.kbT))
+        
+        gamma1 = 1j * (sigmaL - dagger(sigmaL))
+        gamma2 = 1j * (sigmaR - dagger(sigmaR))
+        
+
+        # Build effective onsite matrices per block: A_i = E·I - H_dense (subtract lead self energies on boundaries)
+        A_blocks = []
+        for i in range(num_blocks):
+            # Convert sparse diagonal block to dense
+            H_dense = diagonal_blocks[i].toarray()
+            A_i = E * np.eye(H_dense.shape[0], dtype=complex) - H_dense
+            if i == 0:
+                A_i -= sigmaL
+            if i == num_blocks - 1:
+                A_i -= sigmaR
+            A_blocks.append(A_i)
+        
+        # Forward propagation: compute g_R and g_lesser for each block
+        g_R_blocks = []
+
+        I_blk = np.eye(block_size, dtype=complex)
+        # Block 0 - use spsolve for inversion column‐by‐column
+        g_r = np.linalg.solve(A_blocks[0], I_blk)
+        g_R_blocks.append(g_r)
+        
+        # For blocks 1 ... (num_blocks-1)
+        for i in range(1, num_blocks):
+            B = off_diagonal_blocks[i-1].toarray()  # coupling from block (i-1) to i
+            A_eff = A_blocks[i] - B @ g_R_blocks[i-1] @ dagger(B)
+            # Use spsolve for inversion
+            if i != num_blocks - 1:
+                print(i)
+                g_r = Helper_functions.sparse_inverse(csc_matrix(A_eff))
+            else:
+                g_r = np.linalg.solve(A_eff, I_blk)
+                
+            g_R_blocks.append(g_r)
+
+
+        # Backward propagation: incorporate non-local corrections (reversed loop kept as before)
+        G_R = [None] * num_blocks
+
+        G_R[-1] = g_R_blocks[-1]
+
+        
+        for i in reversed(range(num_blocks - 1)):
+
+            G_R[i] = g_R_blocks[i] @ (
+                I_blk
+                + A_blocks[i][0:block_size, 0:block_size] @ G_R[i + 1] @ A_blocks[i][0:block_size, 0:block_size] @ g_R_blocks[i]
+            )
+      
+        G_R_diag     = np.concatenate([np.diag(b) for b in G_R], dtype=complex)
+        return G_R_diag, gamma1, gamma2, sigmaL, sigmaR
