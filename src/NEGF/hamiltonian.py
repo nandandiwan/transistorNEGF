@@ -37,12 +37,27 @@ class Hamiltonian:
         np.fill_diagonal(H_sp3_explicit, a)
         self.H_sp3_explicit = H_sp3_explicit
         
+        # self energy
+        """Which layer is at the end?"""
+        self.layer_left_lead = 0 # 0,1,2,3 
+        self.layer_right_lead = Nx % 4 # 0,1,2,3  
+        self.tempUnitCell = UnitCell(self.Nz, 5)
+        
+    
+    def getLayersHamiltonian(self, ky) -> dict:
+        layersH00, layersH01 = self.create_sparse_channel_hamlitonian(ky, self.tempUnitCell)
+        layers = {}
+        for layer in range(4):
+            layers[layer] = [layersH00[layer], layersH01[layer]]
+        return layers        
         
         
-    def create_tight_binding(self,ky):
+    def create_tight_binding(self,ky, unitCell : UnitCell = None):
+        if unitCell is None:
+            unitCell = self.unitCell
 
-        unitNeighbors = self.unitCell.neighbors
-        danglingBonds = self.unitCell.danglingBondsZ
+        unitNeighbors = unitCell.neighbors
+        danglingBonds = unitCell.danglingBondsZ
         
         
         numSilicon = len(unitNeighbors.keys())
@@ -96,7 +111,12 @@ class Hamiltonian:
             
         return A
     
+    
+    
+    
+    
     def get_H00_H01(self, ky, sparse=False):
+        """out dated method"""
         oldUnitCell = self.unitCell
         self.unitCell = UnitCell(self.Nz, 2)
         if not sparse:
@@ -108,12 +128,19 @@ class Hamiltonian:
         self.unitCell = oldUnitCell
         return H00, H01
     
+    
+    
     def getMatrixSize(self):
         return len(self.unitCell.ATOM_POSITIONS) * 10
     
-    def create_sparse_hamlitonian(self, ky):
-        unitNeighbors = self.unitCell.neighbors
-        danglingBonds = self.unitCell.danglingBondsZ
+    def create_sparse_hamlitonian(self, ky, unitCell : UnitCell = None):
+        
+        if unitCell is None:
+            unitCell = self.unitCell
+
+
+        unitNeighbors = unitCell.neighbors
+        danglingBonds = unitCell.danglingBondsZ
         numSilicon = len(unitNeighbors.keys())
 
         orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
@@ -193,9 +220,12 @@ class Hamiltonian:
 
         return H
     
-    def create_sparse_channel_hamlitonian(self, ky):
-        unitNeighbors = self.unitCell.neighbors
-        danglingBonds = self.unitCell.danglingBondsZ
+    def create_sparse_channel_hamlitonian(self, ky, unitCell : UnitCell = None):
+        if unitCell is None:
+            unitCell = self.unitCell
+
+        unitNeighbors = unitCell.neighbors
+        danglingBonds = unitCell.danglingBondsZ
         numSilicon = len(unitNeighbors.keys())
 
         orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
@@ -273,7 +303,7 @@ class Hamiltonian:
         H = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsr()
         
         total_size = H.shape[0]
-        block_size = self.Nz * 80
+        block_size = self.Nz * 20 # 2 atoms per single unit z layer 
         num_blocks = (int) (total_size // block_size)
         diagonal_blocks = [None] * num_blocks
         off_diagonal_blocks = [None] * (num_blocks - 1)
@@ -283,7 +313,7 @@ class Hamiltonian:
             m = (block + 1) * block_size
             e = (block + 2) * block_size
             diagonal_blocks[block] = H[s : m, s : m] 
-            off_diagonal_blocks = H[m : e, m : e]
+            off_diagonal_blocks[block] = H[m : e, m : e]
         diagonal_blocks[-1] = H[-block_size:, -block_size:]       
 
         return diagonal_blocks, off_diagonal_blocks

@@ -46,14 +46,21 @@ class UnitCell:
                 (+0.25, -0.25, +0.25), (+0.25, +0.25, -0.25)]
         }
     
-    raw_atoms = [Atom(0,0,0), Atom(0.25,0.25,0.25), Atom(0.5,0.5,0), \
-        Atom(0,0.5,0.5),Atom(0.5,0,0.5), Atom(0.25,0.75,0.75), Atom(0.75, 0.25,0.75), Atom(0.75,0.75,0.25)]
+    
+    
+    """We divide the atoms into 4 layers - 100 cleaving"""
+    raw_atoms = {
+        0 : [Atom(0,0,0), Atom(0, 0.5,0.5)],
+        1 : [Atom(0.25,0.25,0.25), Atom(0.25,0.75,0.75)],
+        2 : [Atom(0.5,0.5,0), Atom(0.5,0,0.5)],
+        3 : [Atom(0.75,0.75,0.25), Atom(0.75, 0.25,0.75)]
+    }
     
     @staticmethod
     def baseCoordinates(nx=1, nz = 1):
         "returns nth layer base coordinates" 
-        return list(map(lambda x: x.add((nx - 1, 0, nz - 1)), UnitCell.raw_atoms))
-    
+        atoms =  list(map(lambda x: x.add((int((nx - 1) // 4), 0, nz - 1)), UnitCell.raw_atoms[(nx - 1) % 4]))
+        return atoms
     @staticmethod
     def determine_hybridization(delta):
         sign_pattern = np.sign(delta)
@@ -81,14 +88,14 @@ class UnitCell:
             self.XZ_map[(nx,nz)] = atom
     
         self.danglingBondsZ = {} # this is for hydrogen passivation
-        self.danglinbBondsX = set()
+        self.danglinbBondsX = set() # testing purposes (get handled through self energy terms)
         self.neighbors = self.mapNeighbors()
         
         
     def check_in_z_direction(self, atom : Atom):
         return not (atom.z >= self.Nz or atom.z < 0)
     def check_in_x_direction(self, atom : Atom):
-        return not (atom.x >= self.Nx or atom.x < 0) 
+        return not (atom.x >= self.Nx / 4 or atom.x < 0) 
     def check_in_y_direction(self, atom : Atom):
         return not (atom.y >= 1 or atom.y < 0) 
     

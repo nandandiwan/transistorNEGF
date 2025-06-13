@@ -2,10 +2,11 @@ from device import Device
 import hamiltonian
 import numpy as np
 import numba
+from lead_self_energy import LeadSelfEnergy
 from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse import csc_matrix, csr_matrix
 from helper import Helper_functions
-
+from time import time
 from scipy.sparse.linalg import spsolve
 
 
@@ -14,6 +15,7 @@ class GreensFunction:
     def __init__(self, device_state : Device):
         self.ds = device_state
         self.eta = 1e-12j
+        self.lead_self_energy = LeadSelfEnergy(device_state)
         
 
     def self_energy(self, E, ky, tol=1e-6):
@@ -343,23 +345,24 @@ class GreensFunction:
         ds = self.ds
         dagger = lambda A: np.conjugate(A.T)
         # Get sparse channel Hamiltonian blocks (diagonal and off‑diagonal)
+        hamiltonian_start = time()
         diagonal_blocks, off_diagonal_blocks = self.ds.hamiltonian.create_sparse_channel_hamlitonian(ky)
-        
+        hamiltonian_end = time()
         num_blocks = len(diagonal_blocks)
         
         # Compute lead self energies (dense)
-        sigmaL, sigmaR = self.self_energy(E, ky, tol=self_energy_tol)
- 
+        #sigmaL, sigmaR = self.self_energy(E, ky, tol=self_energy_tol)
+        
+        self_energy_start = time() 
+        sigmaL, sigmaR = self.lead_self_energy.get_self_energy(E, ky, side="left"), self.lead_self_energy.get_self_energy(E, ky, side="right")
+        self_energy_end = time()
         block_size = sigmaL.shape[0]
-        
-        f_s = GreensFunction.fermi(-ds.q * (E - ds.Vs) / (ds.kbT))
-        f_d = GreensFunction.fermi(-ds.q * (E - ds.Vd) / (ds.kbT))
-        
         gamma1 = 1j * (sigmaL - dagger(sigmaL))
         gamma2 = 1j * (sigmaR - dagger(sigmaR))
         
 
         # Build effective onsite matrices per block: A_i = E·I - H_dense (subtract lead self energies on boundaries)
+        forward_start = time()
         A_blocks = []
         for i in range(num_blocks):
             # Convert sparse diagonal block to dense
@@ -385,15 +388,15 @@ class GreensFunction:
             A_eff = A_blocks[i] - B @ g_R_blocks[i-1] @ dagger(B)
             # Use spsolve for inversion
             if i != num_blocks - 1:
-                print(i)
                 g_r = Helper_functions.sparse_inverse(csc_matrix(A_eff))
             else:
                 g_r = np.linalg.solve(A_eff, I_blk)
                 
             g_R_blocks.append(g_r)
 
-
+        forward_end = time()
         # Backward propagation: incorporate non-local corrections (reversed loop kept as before)
+        backward_start = time()
         G_R = [None] * num_blocks
 
         G_R[-1] = g_R_blocks[-1]
@@ -405,6 +408,14 @@ class GreensFunction:
                 I_blk
                 + A_blocks[i][0:block_size, 0:block_size] @ G_R[i + 1] @ A_blocks[i][0:block_size, 0:block_size] @ g_R_blocks[i]
             )
-      
-        G_R_diag     = np.concatenate([np.diag(b) for b in G_R], dtype=complex)
+        backward_end = time()
+        G_R_diag = np.concatenate([np.diag(b) for b in G_R], dtype=complex)
+        
+        print(f"Hamiltonian construction: {hamiltonian_end - hamiltonian_start} \n \
+              Self Energy construction: {self_energy_end - self_energy_start} \n \
+                  Forward iteration: {forward_end - forward_start} \n \
+                      Backward iteration: {backward_end - backward_start}")
         return G_R_diag, gamma1, gamma2, sigmaL, sigmaR
+    
+    
+        
