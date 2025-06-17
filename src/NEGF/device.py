@@ -2,83 +2,134 @@ import numpy as np
 import scipy.constants as spc
 from hamiltonian import Hamiltonian
 class Device:
-    def __init__(self, channel_length = 10e-9, channel_thickness = 3e-9):
+    def __init__(self, channel_length = 10e-9, channel_thickness = 3e-9, nx=40, nz=50, T=300.0, material_params=None):
         # Physical constants
         self.T = 300  # Kelvin
-        self.kbT = spc.Boltzmann * self.T
         self.q = spc.e
+        self.kbT = spc.Boltzmann * self.T / self.q
+        
         self.hbar = spc.hbar
-        self.m = 0.45 * spc.m_e
-        self.epsl = 8.854e-12 * 3.3
-        self.epox = 8.854e-12 * 3.9
+        self.m0 = spc.m_e
+
+        self.epsilon_0 = spc.epsilon_0
         self.a = 5.431e-10
+        self.V_thermal = self.kbT / self.q
         
         # hamiltonian params
         self.block_width = 0.25 * self.a 
         self.block_height = 0.75 * self.a
         
-        # device parameters
+        
         self.channel_length = channel_length
         self.channel_thickness = channel_thickness
+        # hamiltonian parameters
         self.unitX = int(self.channel_length // self.block_width)
         self.unitZ = int(self.channel_thickness // self.block_height)
         
         # voltage 
-        self.VG = 0
-        self.Vs = 0
+        self.VG = 0.25
+        self.Vs = 0.1
         self.Vd = 0
+    
+        # arrays for poisson 
+        self.channel_length = channel_length
+        self.thickness = channel_thickness
+        self.nx = nx
+        self.nz = nz
+        self.dx = self.channel_length / (self.nx - 1) if self.nx > 1 else self.channel_length
+        self.dz = self.thickness / (self.nz - 1) if self.nz > 1 else self.thickness
         
-        # silicon parameters
-        self.epsilon_FE = self.default_material_params['epsilon_FE']  # FE background permittivity 
-        self.epsilon_IL = self.default_material_params['epsilon_IL']  # Interfacial Layer Dielectric permittivity 
-        self.epsilon_Si = self.default_material_params['epsilon_Si']  # Silicon permittivity 
-        self.epsilon_Spacer = self.default_material_params['epsilon_Spacer']  # Spacer dielectric permittivity 
-        self.epsilon_Insulator = self.default_material_params['epsilon_Insulator']  # Spacer dielectric permittivity 
-        
-        self.N_donor = self.default_material_params['N_donor']  # Drain Donor Doping concentration in m^-3
-        self.N_acceptor = self.default_material_params['N_acceptor']  # Channel Acceptor Doping concentration in m^-3
-        self.N_c = self.default_material_params['N_c']
-        self.N_v = self.default_material_params['N_v']
-        self.n_i = self.default_material_params['n_i']
-        self.E_g = self.default_material_params['E_g']
+        if material_params is None:
+            self.epsilon_rel = 11.7  # Relative permittivity of Silicon
+            self.Eg = 1.12   # Bandgap of Silicon [J]
+            self.xi = 4.05    # Electron affinity of Silicon [J] (energy from vacuum=0 to Ec)
+            self.Nc = 2.8e25 # Conduction band effective density of states [m^-3] for Si @300K
+            self.Nv = 1.04e25 # Valence band effective density of states [m^-3] for Si @300K
+            self.me_eff = 0.26 # Effective mass for electrons (conductivity effective mass for Si)
+            self.mh_eff = 0.49 # Effective mass for holes (conductivity effective mass for Si)
+        else:
+            self.epsilon_rel = material_params.get("epsilon_rel", 11.7)
+            self.Eg = material_params.get("Eg", 1.12 * self.q)
+            self.xi = material_params.get("xi", 4.05 * self.q)
+            self.Nc = material_params.get("Nc", 2.8e25)
+            self.Nv = material_params.get("Nv", 1.04e25)
+            self.me_eff = material_params.get("me_eff", 0.26)
+            self.mh_eff = material_params.get("mh_eff", 0.49)
 
-        self.delta_E_0 = 0.5 * self.k_B * self.T_0 / self.e_charge * np.log(self.N_c/ self.N_v)
-        self.E_c = self.E_g/2 + self.delta_E_0
-        self.E_v = -self.E_g/2 + self.delta_E_0
+        self.epsilon_val = self.epsilon_rel  # Absolute permittivity [F/m]
 
-        self.E_d = self.E_c - self.default_material_params['E_d']
-        self.E_a = self.E_v + self.default_material_params['E_a']
+        # Doping parameters
+        self.N_donor = 1.0e23  # Donor concentration for N-type regions [m^-3] (e.g., 1e17 cm^-3)
+        self.N_acceptor = 1.0e21  # Acceptor concentration for P-type regions [m^-3] (e.g., 1e15 cm^-3)
+
+        # --- Core Arrays ---
+        self.potential = np.zeros((self.nx, self.nz))  # Electric potential [V]
+        self.Ec = np.zeros((self.nx, self.nz))         # Conduction band edge [J]
+        self.Ev = np.zeros((self.nx, self.nz))         # Valence band edge [J]
+        self.doping_profile = np.zeros((self.nx, self.nz)) # Net doping (Nd-Na) [m^-3]
+        self.epsilon = np.full((self.nx - 1, self.nz - 1), self.epsilon_val) # Permittivity map [F/m]
+
+        self.n = np.zeros((self.nx, self.nz))          # Electron concentration [m^-3]
+        self.p = np.zeros((self.nx, self.nz))          # Hole concentration [m^-3]
+        self.Efn = np.zeros((self.nx, self.nz))        # Electron quasi-Fermi level [J]
+        self.Efp = np.zeros((self.nx, self.nz))        # Hole quasi-Fermi level [J]
+
+
+        self._initialize_doping_profile()
+        self._initialize_band_edges_flat_band() # Initial guess for Ec, Ev
+
+
+    def _initialize_doping_profile(self):
+        if self.nx == 0:
+            return
+        n_region1_end_idx = self.nx // 5
+        p_region_end_idx = 4 * (self.nx // 5)
+        for i in range(self.nx):
+            if i < n_region1_end_idx:
+                self.doping_profile[i, :] = self.N_donor
+            elif i < p_region_end_idx:
+                self.doping_profile[i, :] = -self.N_acceptor
+            else:
+                self.doping_profile[i, :] = self.N_donor
+    
+    
+    def _initialize_band_edges_flat_band(self):
+        """Initializes Ec and Ev. Assumes V=0 initially. Ec = -xi - qV."""
+        self.Ec[:, :] = -self.xi # Assuming xi is defined as energy from vacuum (0) to Ec
+        self.Ev[:, :] = self.Ec - self.Eg
+
+
+
+    def update_carrier_concentrations_fermi(self):
+        """
+        Updates electron (n) and hole (p) concentrations.
+        Uses Fermi-Dirac statistics if fdint_half is available, otherwise Boltzmann.
+        This method should be called within a self-consistent loop.
+        """
+        # For Fermi-Dirac (requires fdint library):
+        # eta_c = (self.Efn - self.Ec) / (self.kb * self.T)
+        # eta_v = (self.Ev - self.Efp) / (self.kb * self.T)
+        # try:
+        #     self.n = self.Nc * fdint_half(eta_c)
+        #     self.p = self.Nv * fdint_half(eta_v)
+        # except NameError: # fdint_half not imported
+        #     print("Warning: fdint_half not available. Using Boltzmann approximation for n, p.")
+        exp_n_arg = np.clip((self.Efn - self.xi - self.Ec) / (self.kbT), -700, 700)
+        exp_p_arg = np.clip((self.Ev - self.xi - self.Efp) / (self.kbT), -700, 700)
         
         
-        # solver 
-        self.hamiltonian = Hamiltonian(self.unitX, self.unitZ)
-        
-        # poisson solver within channel params
-        self.resolution = 1
-        self.Nz = (4 * self.unitZ + 1) + 4 * self.unitZ * (self.resolution - 1) 
-        self.Nx = 4 * self.unitX + (4 * self.unitZ - 1)* (self.resolution - 1)
-        self.dx = self.channel_length / (self.Nx - 1)
-        self.dz = self.channel_thickness / (self.Nz - 1)
-        
-        
-        
-        self.Ec = np.zeros((self.Nx, self.Nz))
-        self.Q0 = np.zeros_like(self.Ec)
-        
-        
-        
-        self.electron_affinity = np.zeros((self.Nx, self.Nz))
-        self.n_matrix = np.zeros_like(self.Ec)
-        self.p_matrix = np.zeros_like(self.Ec)
-        self.Epsilon = np.zeros((self.Nx - 1, self.Nz - 1))
-        
-        self.NA = np.zeros((self.Nx, self.Nz))
-        self.ND = np.zeros((self.Nx, self.Nz))
-        
-        self.Efn = np.zeros_like(self.Ec)
-        
-    def setVoltages(self, Vg, Vd, Vs):
-        self.Vg = Vg
-        self.Vd = Vd
-        self.Vs = Vs
-        
+        self.n = self.Nc * np.exp(exp_n_arg)
+        self.p = self.Nv * np.exp(exp_p_arg)
+
+    def update_quasi_fermi_level(self):
+        epsilon = 1e-10  # Small number to prevent log(0) or division by zero
+
+ 
+        n_density_from_negf = np.maximum(self.n, epsilon)
+        p_density_from_negf = np.maximum(self.p, epsilon)
+
+        ratio_n_Nc = n_density_from_negf / (self.Nc + epsilon)
+        self.Efn = self.Ec + (self.kbT) * np.log(np.maximum(ratio_n_Nc, epsilon))
+        ratio_p_Nv = p_density_from_negf / (self.Nv + epsilon)
+  
+        self.Efp = self.Ev - (self.kbT) * np.log(np.maximum(ratio_p_Nv, epsilon))

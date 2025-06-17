@@ -7,13 +7,16 @@ if project_root not in sys.path:
 from NEGF_unit_generation import UnitCell 
 from src.tight_binding import tight_binding_params as TBP
 import numpy as np
+from device import Device
 import scipy.sparse as sp
 
 class Hamiltonian:
-    def __init__(self, Nx, Nz):
-        self.Nx = Nx
-        self.Nz = Nz
-        self.unitCell = UnitCell(Nz, Nx)
+    def __init__(self, device : Device):
+        self.device = device
+        
+        self.Nx = int(device.channel_length // device.block_width)
+        self.Nz = int(device.channel_thickness // device.block_height)
+        self.unitCell = UnitCell(self.Nz, self.Nx)
         
         self.U_orb_to_sp3 = 0.5*np.array([[1, 1, 1, 1],
                              [1, 1,-1,-1],
@@ -40,7 +43,7 @@ class Hamiltonian:
         # self energy
         """Which layer is at the end?"""
         self.layer_left_lead = 0 # 0,1,2,3 
-        self.layer_right_lead = Nx % 4 # 0,1,2,3  
+        self.layer_right_lead = self.Nx % 4 # 0,1,2,3  
         self.tempUnitCell = UnitCell(self.Nz, 5)
         
     
@@ -239,6 +242,7 @@ class Hamiltonian:
             atomToIndex[atom] = atom_index
             indexToAtom[atom_index] = atom
         
+        potentialPerAtom = self.potential_correction()
 
         numSilicon = len(unitNeighbors.keys())
 
@@ -277,11 +281,11 @@ class Hamiltonian:
             base = atom_idx * numOrbitals
             for i in range(4):
                 for j in range(i ,4):
-                    add(base + i, base + j, onsiteMatrix[i,j])
+                    add(base + i, base + j, onsiteMatrix[i,j] + potentialPerAtom[atom_index] * (i == j))
         
             for p in range(4, 9):                       # five d’s
-                add(base + p, base + p, TBP.E['dxy'] )
-            add(base + 9, base + 9, TBP.E['s*'])
+                add(base + p, base + p, TBP.E['dxy'] + potentialPerAtom[atom_index])
+            add(base + 9, base + 9, TBP.E['s*']+ potentialPerAtom[atom_index])
         
     
         for atom_index, atom in indexToAtom.items():
@@ -317,3 +321,18 @@ class Hamiltonian:
         diagonal_blocks[-1] = H[-block_size:, -block_size:]       
 
         return diagonal_blocks, off_diagonal_blocks
+    
+    def potential_correction(self):
+        voltage = self.device.Ec
+        
+        L, H = voltage.shape
+        potential_diag = [None] * len(self.unitCell.ATOM_POSITIONS) * 10
+        for atom_index,atom in enumerate(self.unitCell.neighbors):
+            px, pz = atom.x, atom.z
+            gx = (int) (px / self.Nx * L)
+            gz = (int) (pz / self.Nz * H)
+            
+            pot = voltage[gx, gz]
+            potential_diag[atom_index] = pot
+        
+        return        

@@ -1,87 +1,112 @@
-from device import Device
 import numpy as np
-import matplotlib.pyplot as plt
 import scipy.sparse as sp
-import scipy.sparse.linalg as spla
-from scipy.ndimage import convolve
-import scipy.constants as spc
+from scipy.sparse.linalg import spsolve
+from device import Device
 
 
-class Poisson:
-    def __init__(self, device : Device):
-        self.ds = device
-        self.dx = self.ds.dx
-        self.dz = self.ds.dz
-        self.Nx = self.ds.Nx
-        self.Nz = self.ds.Nz
-        
-        n_points = self.Nx * self.Nz
+class PoissonSolver:
+    def __init__(self, device_obj : Device):
+        self.device = device_obj
+        self.nx = self.device.nx
+        self.nz = self.device.nz
+        self.dx = self.device.dx
+        self.dz = self.device.dz
+        self.q = self.device.q
 
 
-        
-    def init_Poisson(self):
-        def index(i,j):
-            return i + self.Nx
-        
-        Ec = self.ds.Ec
-        epsilon = self.ds.Epsilon
-        n = self.ds.n_matrix
-        p = self.ds.p_matrix
-        NA = self.ds.NA
-        ND = self.ds.ND
-        ratio = self.dx / self.dz
-        
+    def _get_1d_index(self, i, j):
+        return i * self.nz + j
+
+    
+    
+    def solve_initial_poisson_equation_SparseMat(self):
+
+        device_state = self.device
+
+        # Define the grid parameters
+        dx, dz = device_state.dx, device_state.dz   # grid step size
+        ratio_dx_dz = dx/dz
+        Nx, Nz = device_state.potential.shape  # number of grids
+
+        # Define the structure parameters
+
+
+        # Define the electical parameters
+        V_gate = device_state.VG
+        V_drain = device_state.Vd
+        V_source = device_state.Vs
+        gate_start_idx_x = self.nx // 3
+        gate_end_idx_x = 2 * (self.nx // 3)
+        epsilon = device_state.epsilon.copy()
+
+        n_points = Nx * Nz
+        G = np.zeros(n_points)
+
+        def index(i, j):
+            return i + j * Nx
+
         i_list_for_coo_matrix = []
         j_list_for_coo_matrix = []
         data_list_for_coo_matrix = []
-        n_points = self.Nx * self.Nz
         
-        
-        G = np.zeros(n_points)
-        
-        for j in range(self.Nz):
-            for i in range(self.Nx):
-                idx = index(i,j)
-    
+        for j in range(Nz):
+            for i in range(Nx):
+                
+                idx = index(i, j)
+                
                 if i == 0:
                     i_list_for_coo_matrix.append(idx)
                     j_list_for_coo_matrix.append(idx)
                     data_list_for_coo_matrix.append(1.0)
-                    G[idx] = self.ds.VG
-        
-                elif i == self.Nx-1:
+                    G[idx] = V_source
+                        
+                elif i == Nx-1:
+                    
                     i_list_for_coo_matrix.append(idx)
                     j_list_for_coo_matrix.append(idx)
                     data_list_for_coo_matrix.append(1.0)
-                    G[idx] = self.ds.Vd
+                    G[idx] = V_drain
                     
-                elif j == 0:  # device bottom side 
-          
-                    ''' floating substrate (Neumaan BC):  '''               
-                    i_list_for_coo_matrix.extend([idx, idx,])
-                    j_list_for_coo_matrix.extend([index(i, j+1), idx,])
-                    data_list_for_coo_matrix.extend(
-                        [1,
-                            -1]
-                    ) 
-                    G[idx] = 0
-                elif j == self.Nz-1 :  # device top side, Neumann BC
-                    i_list_for_coo_matrix.extend([idx, idx,])
-                    j_list_for_coo_matrix.extend([index(i, j-1), idx,])
-                    data_list_for_coo_matrix.extend(
-                        [1,
-                            -1]
-                    )                     
-                    G[idx] = 0
-                else:
+                    
+                elif j == self.nz - 1:
+                    if gate_start_idx_x <= i < gate_end_idx_x:  # Middle third (Dirichlet)
+                        i_list_for_coo_matrix.append(idx)
+                        j_list_for_coo_matrix.append(idx)
+                        data_list_for_coo_matrix.append(1.0)
+                        G[idx] = V_gate
+                    else:  # Outer thirds (Neumann: dV/dz = 0 => V_i,nz-1 = V_i,nz-2)
+                        i_list_for_coo_matrix.extend([idx, idx,])
+                        j_list_for_coo_matrix.extend([index(i, j-1), idx,])
+                        data_list_for_coo_matrix.extend(
+                            [1,
+                             -1]
+                        ) 
+                        G[idx] = 0
+                elif j == 0:
+                    if gate_start_idx_x <= i < gate_end_idx_x:  # Middle third (Dirichlet)
+                        i_list_for_coo_matrix.append(idx)
+                        j_list_for_coo_matrix.append(idx)
+                        data_list_for_coo_matrix.append(1.0)
+                        G[idx] = V_gate
+                    else:  # Outer thirds (Neumann: dV/dz = 0 => V_i,nz-1 = V_i,nz-2)
+                        i_list_for_coo_matrix.extend([idx, idx,])
+                        j_list_for_coo_matrix.extend([index(i, j+1), idx,])
+                        data_list_for_coo_matrix.extend(
+                            [1,
+                             -1]
+                        ) 
+                        G[idx] = 0                 
+            
+
+                else: # volume region sparse matrix
                     i_list_for_coo_matrix.extend([idx, idx, idx, idx, idx])
                     j_list_for_coo_matrix.extend([index(i+1, j), index(i, j+1), index(i-1, j), index(i, j-1), idx])
                     data_list_for_coo_matrix.extend(
-                        [(epsilon[i, j] + epsilon[i,j-1])/2 / ratio**2, 
+                        [(epsilon[i, j] + epsilon[i,j-1])/2 / ratio_dx_dz**2, 
                          (epsilon[i-1, j] + epsilon[i,j])/2,
-                         (epsilon[i-1, j] + epsilon[i-1,j-1])/2 / ratio**2,
+                         (epsilon[i-1, j] + epsilon[i-1,j-1])/2 / ratio_dx_dz**2,
                          (epsilon[i, j-1] + epsilon[i-1,j-1])/2, 
-                         -(epsilon[i,j] + epsilon[i-1, j] + epsilon[i-1, j-1] + epsilon[i, j-1])/2 * (1+1/ratio**2)]
+                         -(epsilon[i,j] + epsilon[i-1, j] + epsilon[i-1, j-1] + epsilon[i, j-1])/2 * (1+1/ratio_dx_dz**2)]
                     )
 
                     G[idx] = 0 # RHS of Poisson equation
@@ -92,83 +117,159 @@ class Poisson:
         A = A.tocsr()
 
         # solve this linear system
-        Init_V = spla.spsolve(A, G)
+        Init_V = spsolve(A, G)
 
         # reshape the solution vector to matrix
-        Init_V = Init_V.reshape((self.Nz, self.Nx)).T
+        Init_V = Init_V.reshape((Nz, Nx)).T
 
         return Init_V
+    def solve_poisson_equation_SparseMat(self):  
 
-    def delta_Poisson(self):
-        def index(i,j):
-            return i + self.Nx
-        Ec = self.ds.Ec
-        epsilon = self.ds.Epsilon
-        n = self.ds.n_matrix
-        p = self.ds.p_matrix
-        NA = self.ds.NA
-        ND = self.ds.ND
-        rho = self.ds.q * (self.p - self.n + self.NA - self.ND)
-        rho = rho.copy()
-        epsilon = self.epsilon.copy()
-        Ec = self.Ec.copy()
+        device_state = self.device
+
+        # Define the grid parameters
+        dx, dz = device_state.dx, device_state.dz   # grid step size
+        ratio_dx_dz = dx/dz
+        Nx, Nz = device_state.potential.shape  # number of grids
+
+
+        # Define the physics constants
+        V_therm = device_state.V_thermal
+        e_charge = device_state.q 
+        epsilon_0 = device_state.epsilon_0
+
+        # Define the device state parameters
+        epsilon = device_state.epsilon.copy()
+        gate_start_idx_x = self.nx // 3
+        gate_end_idx_x = 2 * (self.nx // 3)
+        V_grid = device_state.potential.copy()
+
+        ### charge density calculation
+        rho = np.zeros(V_grid.shape)
+        rho[:, 1:-1] = \
+                e_charge * (device_state.p - device_state.n + device_state.doping_profile)[:, 1:-1]
         
+
+        n_ = np.zeros(rho.shape)
+        n_[:, 1:-1] = device_state.n[:, 1:-1]  ### exclude Silicon-IL interface
         
-        ratio = self.dx / self.dz
-        for j in range(self.Nz):
-            for i in range(self.Nx):
-                idx = index(i,j)
-    
+        p_ = np.zeros(rho.shape)
+        p_[:, 1:-1] = device_state.p[:, 1:-1] ### exclude Silicon-IL interface
+
+        # Construct the sparse matrix:A and right-hand-side vector:G
+        n_points = Nx * Nz
+        G = np.zeros(n_points)
+
+        def index(i, j):
+            return i + j * Nx
+
+        i_list_for_coo_matrix = []
+        j_list_for_coo_matrix = []
+        data_list_for_coo_matrix = []
+
+        for j in range(Nz):
+            for i in range(Nx):
+                
+                idx = index(i, j)
+                
                 if i == 0:
-                        self.A[idx, index(i+1, j)] = 1
-                        self.A[idx, idx] = -1 
-                        self.G[idx] = 0
-        
-                elif i == self.Nx-1:
-                    self.A[idx, index(i-1, j)] = 1
-                    self.A[idx, idx] = -1
-                    self.G[idx] = 0
+                    i_list_for_coo_matrix.append(idx)
+                    j_list_for_coo_matrix.append(idx)
+                    data_list_for_coo_matrix.append(1.0)
+                    G[idx] = 0
+                        
+                elif i == Nx-1:
                     
-                elif j == 0:  # device bottom side 
-                    ''' floating substrate (Neumaan BC):  '''               
-                    self.A[idx, index(i, j+1)] = 1
-                    self.A[idx, idx] = -1
-                    self.G[idx] = 0
-                elif j == self.Nz-1 :  # device top side, Neumann BC
-                    self.A[idx, index(i, j-1)] = 1
-                    self.A[idx, idx] = -1
-                    self.G[idx] = 0
-                else:
-                    epsilon = self.epsilon
-                    self.A[idx, index(i+1, j)] = (epsilon[i, j] + epsilon[i,j-1])/2 / ratio**2 # a1
-                    self.A[idx, index(i, j+1)] = (epsilon[i-1, j] + epsilon[i,j])/2  # a2
-                    self.A[idx, index(i-1, j)] = (epsilon[i-1, j] + epsilon[i-1,j-1])/2 / ratio**2  # a3
-                    self.A[idx, index(i, j-1)] = (epsilon[i, j-1] + epsilon[i-1,j-1])/2  # a4
-                    self.A[idx, idx] = -(epsilon[i,j] + epsilon[i-1, j] + epsilon[i-1, j-1] + epsilon[i, j-1])/2 * (1+1/ratio**2) - \
-                        1/self.ds.V_therm * self.ds.e_charge * (p[i,j] + n[i,j]) * self.dz**2 / spc.epsilon_0  
+                    i_list_for_coo_matrix.append(idx)
+                    j_list_for_coo_matrix.append(idx)
+                    data_list_for_coo_matrix.append(1.0)
+                    G[idx] = 0
                     
-                    self.G[idx] = -(rho[i,j]) * self.dz**2 / spc.epsilon_0 - \
+                    
+                elif j == self.nz - 1:
+                    if gate_start_idx_x <= i < gate_end_idx_x:  # Middle third (Dirichlet)
+                        i_list_for_coo_matrix.append(idx)
+                        j_list_for_coo_matrix.append(idx)
+                        data_list_for_coo_matrix.append(1.0)
+                        G[idx] = 0
+                    else:  # Outer thirds (Neumann: dV/dz = 0 => V_i,nz-1 = V_i,nz-2)
+                        i_list_for_coo_matrix.extend([idx, idx,])
+                        j_list_for_coo_matrix.extend([index(i, j-1), idx,])
+                        data_list_for_coo_matrix.extend(
+                            [1,
+                             -1]
+                        ) 
+                        G[idx] = 0
+                elif j == 0:
+                    if gate_start_idx_x <= i < gate_end_idx_x:  # Middle third (Dirichlet)
+                        i_list_for_coo_matrix.append(idx)
+                        j_list_for_coo_matrix.append(idx)
+                        data_list_for_coo_matrix.append(1.0)
+                        G[idx] = 0
+                    else:  # Outer thirds (Neumann: dV/dz = 0 => V_i,nz-1 = V_i,nz-2)
+                        i_list_for_coo_matrix.extend([idx, idx,])
+                        j_list_for_coo_matrix.extend([index(i, j+1), idx,])
+                        data_list_for_coo_matrix.extend(
+                            [1,
+                             -1]
+                        ) 
+                        G[idx] = 0     
+                else: # volume region sparse matrix
+                    a1 = (epsilon[i, j] + epsilon[i,j-1])/2 / ratio_dx_dz**2
+                    a2 = (epsilon[i-1, j] + epsilon[i,j])/2
+                    a3 = (epsilon[i-1, j] + epsilon[i-1,j-1])/2 / ratio_dx_dz**2
+                    a4 = (epsilon[i, j-1] + epsilon[i-1,j-1])/2
+                    a0 = -(epsilon[i,j] + epsilon[i-1, j] + epsilon[i-1, j-1] + epsilon[i, j-1])/2 * (1+1/ratio_dx_dz**2)
+                    i_list_for_coo_matrix.extend([idx, idx, idx, idx, idx])
+                    j_list_for_coo_matrix.extend([index(i+1, j), index(i, j+1), index(i-1, j), index(i, j-1), idx])
+                    data_list_for_coo_matrix.extend(
+                        [a1, 
+                         a2,
+                         a3,
+                         a4, 
+                         a0 - 1/V_therm * e_charge * (p_[i,j] + n_[i,j]) * dz**2 / epsilon_0]
+                    )
+
+                    G[idx] = -rho[i,j]* dz**2 / epsilon_0 - \
                         (
-                           self.A[idx, index(i+1, j)]*Ec[i+1,j] +self.A[idx, index(i, j+1)]*Ec[i,j+1] + \
-                        self.A[idx, index(i-1, j)]*Ec[i-1,j] +self.A[idx, index(i, j-1)]*Ec[i,j-1] + \
-                           -(epsilon[i,j] + epsilon[i-1, j] + epsilon[i-1, j-1] + epsilon[i, j-1])/2 * (1+1/ratio**2)*Ec[i,j]
+                            a1*V_grid[i+1,j] + a2*V_grid[i,j+1] + \
+                         a3*V_grid[i-1,j] + a4*V_grid[i,j-1] + \
+                           a0*V_grid[i,j]
                         ) # RHS of Poisson equation
+                    
+        A = sp.coo_matrix((data_list_for_coo_matrix, (i_list_for_coo_matrix, j_list_for_coo_matrix)))
 
         # convert this matrix into csr representation
-        F =self.A.tocsr()
+        A = A.tocsr()
 
         # solve this linear system
-        Delta_V = spla.spsolve(F, self.G)
+        Delta_V = spsolve(A, G)
 
         # reshape the solution vector to array
-        Delta_V = Delta_V.reshape((self.Nz, self.Nx)).T
+        Delta_V = Delta_V.reshape((Nz, Nx)).T
 
         return Delta_V
     
-    def solvePoisson(self):
-        self.ds.Ec = self.init_Poisson()
+    def solve_poisson_equation(self, tol = 1e-5):
         err = 1
-        while (err > 1e-5):
-            dV = self.delta_Poisson()
-            err = np.max(np.abs(dV))
-            self.ds.Ec += dV
+        MAX_ITERATIONS = 100
+        self.device.potential = self.solve_initial_poisson_equation_SparseMat()
+        self.device.Ev = self.device.potential
+        self.device.Ec = self.device.Ev + self.device.Eg
+    
+        self.device.update_carrier_concentrations_fermi()
+        
+        
+        for iteration in range(MAX_ITERATIONS):
+            deltaV = self.solve_poisson_equation_SparseMat()
+            self.device.potential += deltaV
+            self.device.Ev = self.device.potential
+            self.device.Ec = self.device.Ev + self.device.Eg
+            err = np.max(np.abs(deltaV))
+            if err > tol:
+                print(f"Poisson solver converged in {iteration} iterations")
+                break
+            
+            
+
+          

@@ -8,12 +8,13 @@ from scipy.sparse import csc_matrix, csr_matrix
 from helper import Helper_functions
 from time import time
 from scipy.sparse.linalg import spsolve
-
+from hamiltonian import Hamiltonian
 
 
 class GreensFunction:
-    def __init__(self, device_state : Device):
+    def __init__(self, device_state : Device, ham : Hamiltonian):
         self.ds = device_state
+        self.ham = ham
         self.eta = 1e-12j
         self.lead_self_energy = LeadSelfEnergy(device_state)
         
@@ -25,7 +26,7 @@ class GreensFunction:
         dagger = lambda A: A.conj().T
         
         # Coupling matrices
-        H00, H01 = self.ds.hamiltonian.get_H00_H01(ky, sparse=True)
+        H00, H01 = self.ham.get_H00_H01(ky, sparse=True)
         H10 = dagger(H01)
 
         # Surface Green's functions at left and right leads
@@ -223,7 +224,7 @@ class GreensFunction:
         ds = self.ds
         dagger = lambda A: np.conjugate(A.T)
         # Get sparse channel Hamiltonian blocks (diagonal and off‑diagonal)
-        diagonal_blocks, off_diagonal_blocks = self.ds.hamiltonian.create_sparse_channel_hamlitonian(ky)
+        diagonal_blocks, off_diagonal_blocks = self.ham.create_sparse_channel_hamlitonian(ky)
         print("finished hamiltonian construction")
         num_blocks = len(diagonal_blocks)
         
@@ -346,7 +347,7 @@ class GreensFunction:
         dagger = lambda A: np.conjugate(A.T)
         # Get sparse channel Hamiltonian blocks (diagonal and off‑diagonal)
         hamiltonian_start = time()
-        diagonal_blocks, off_diagonal_blocks = self.ds.hamiltonian.create_sparse_channel_hamlitonian(ky)
+        diagonal_blocks, off_diagonal_blocks = self.ham.create_sparse_channel_hamlitonian(ky)
         hamiltonian_end = time()
         num_blocks = len(diagonal_blocks)
         
@@ -409,13 +410,13 @@ class GreensFunction:
                 + A_blocks[i][0:block_size, 0:block_size] @ G_R[i + 1] @ A_blocks[i][0:block_size, 0:block_size] @ g_R_blocks[i]
             )
         backward_end = time()
-        G_R_diag = np.concatenate([np.diag(b) for b in G_R], dtype=complex)
+        
         
         print(f"Hamiltonian construction: {hamiltonian_end - hamiltonian_start} \n \
               Self Energy construction: {self_energy_end - self_energy_start} \n \
                   Forward iteration: {forward_end - forward_start} \n \
                       Backward iteration: {backward_end - backward_start}")
-        return G_R_diag, gamma1, gamma2, sigmaL, sigmaR
+        return G_R, gamma1, gamma2, sigmaL, sigmaR
     
     
         
