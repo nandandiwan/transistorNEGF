@@ -1,6 +1,6 @@
 import numpy as np
 import scipy.constants as spc
-from hamiltonian import Hamiltonian
+
 class Device:
     def __init__(self, channel_length = 10e-9, channel_thickness = 3e-9, nx=40, nz=50, T=300.0, material_params=None):
         # Physical constants

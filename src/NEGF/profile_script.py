@@ -32,9 +32,7 @@ if __name__ == "__main__":
     
 
     num_processes = 32
-    print(f"Machine has {num_processes} CPU cores.")
-    
-    
+
     print(f"Starting {len(param_grid)} calculations using {num_processes} processes...")
     start_time = time.time()
     

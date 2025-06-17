@@ -16,7 +16,7 @@ class GreensFunction:
         self.ds = device_state
         self.ham = ham
         self.eta = 1e-12j
-        self.lead_self_energy = LeadSelfEnergy(device_state)
+        self.lead_self_energy = LeadSelfEnergy(device_state, ham)
         
 
     def self_energy(self, E, ky, tol=1e-6):
@@ -348,6 +348,7 @@ class GreensFunction:
         # Get sparse channel Hamiltonian blocks (diagonal and off‑diagonal)
         hamiltonian_start = time()
         diagonal_blocks, off_diagonal_blocks = self.ham.create_sparse_channel_hamlitonian(ky)
+        
         hamiltonian_end = time()
         num_blocks = len(diagonal_blocks)
         

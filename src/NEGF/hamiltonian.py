@@ -281,11 +281,11 @@ class Hamiltonian:
             base = atom_idx * numOrbitals
             for i in range(4):
                 for j in range(i ,4):
-                    add(base + i, base + j, onsiteMatrix[i,j] + potentialPerAtom[atom_index] * (i == j))
+                    add(base + i, base + j, onsiteMatrix[i,j] + potentialPerAtom[atom_idx] * (i == j))
         
             for p in range(4, 9):                       # five d’s
-                add(base + p, base + p, TBP.E['dxy'] + potentialPerAtom[atom_index])
-            add(base + 9, base + 9, TBP.E['s*']+ potentialPerAtom[atom_index])
+                add(base + p, base + p, TBP.E['dxy'] + potentialPerAtom[atom_idx])
+            add(base + 9, base + 9, TBP.E['s*']+ potentialPerAtom[atom_idx])
         
     
         for atom_index, atom in indexToAtom.items():
@@ -335,4 +335,4 @@ class Hamiltonian:
             pot = voltage[gx, gz]
             potential_diag[atom_index] = pot
         
-        return        
+        return potential_diag       

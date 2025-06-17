@@ -6,24 +6,28 @@ import numpy as np
 from helper import Helper_functions
 from scipy.sparse import bmat, identity, random
 from scipy.sparse.linalg import eigsh, eigs
-
+from hamiltonian import Hamiltonian
 class LeadSelfEnergy():
-    def __init__(self, device : Device):
+    def __init__(self, device : Device, hamiltonian : Hamiltonian):
         self.ds = device
+        
+        self.ham = hamiltonian
+    
         self.E = 0.01
         self.ky = 0
         # for silicon 100
         self.P = 4
         # cache
         self.layerHamiltonianCache = {}
-        self.layerHamiltonianCache[self.ky] = device.hamiltonian.getLayersHamiltonian(self.ky)
+        self.layerHamiltonianCache[self.ky] = self.ham.getLayersHamiltonian(self.ky)
+    
     def set_inputs(self, E, ky):
         self.E = E
         self.ky = ky
         
     def get_layer_hamiltonian(self, p, side = "left") -> spa.csc_matrix:
         if not self.ky in self.layerHamiltonianCache:
-            self.layerHamiltonianCache[self.ky] = self.ds.hamiltonian.getLayersHamiltonian(self.ky)
+            self.layerHamiltonianCache[self.ky] = self.ham.getLayersHamiltonian(self.ky)
         layerHamiltonians = self.layerHamiltonianCache[self.ky]
         
         if p > self.P or p < 1:
@@ -33,7 +37,7 @@ class LeadSelfEnergy():
         if side == "left":
             p = 3 - (p-1)
         elif side == "right":
-            p = (self.ds.hamiltonian.layer_right_lead + p)  % 4
+            p = (self.ham.layer_right_lead + p)  % 4
         else:
             raise ValueError("there is only left and right sides") 
         
@@ -95,6 +99,7 @@ class LeadSelfEnergy():
         return U_plus, Lambda_plus
     
     def get_self_energy(self, E, ky, side = "left"):
+       
         dagger = lambda A: np.conjugate(A.T)
         self.set_inputs(E, ky)
         XIs, XI, PI, h12 = self.decomposition_algorithm(side)
@@ -105,6 +110,7 @@ class LeadSelfEnergy():
         Z = I * 0
         D = E * I - XI
         T = -PI
+   
 
         A = bmat([
             [Z, I],
