@@ -4,8 +4,8 @@ import scipy.sparse as spa
 import scipy as sp
 import numpy as np
 from helper import Helper_functions
-from scipy.sparse import bmat, identity, random
-from scipy.sparse.linalg import eigsh, eigs
+from scipy.sparse import bmat, identity, random, csc_matrix
+from scipy.sparse.linalg import eigsh, eigs, spsolve
 from hamiltonian import Hamiltonian
 class LeadSelfEnergy():
     def __init__(self, device : Device, hamiltonian : Hamiltonian):
@@ -20,11 +20,55 @@ class LeadSelfEnergy():
         # cache
         self.layerHamiltonianCache = {}
         self.layerHamiltonianCache[self.ky] = self.ham.getLayersHamiltonian(self.ky)
+        
+        self.eta = 1e-9j
     
     def set_inputs(self, E, ky):
         self.E = E
         self.ky = ky
+    
+    
+    def iterative_self_energy(self, E, ky, side = "left"):
+       
+        dagger = lambda A: np.conjugate(A.T)
+        self.set_inputs(E, ky)
+        XIs, XI, PI,h12 = self.decomposition_algorithm(side)
+        E = self.E + self.eta
+        I = np.eye(XI.shape[0], dtype = complex)
+        A = E * I - XI
+        As = E * I - XIs
+        delta = 1e-5
+
+        # Initialize Π† (PIdagger) as the conjugate transpose of Π
+        PIdagger = PI.conj().T
         
+        while np.max(np.abs(PI)) > delta or np.max(np.abs(PIdagger)) > delta:
+        
+            try:
+                X_PI = np.linalg.solve(A, PI)
+                X_PIdagger = np.linalg.solve(A, PIdagger)
+    
+            except np.linalg.LinAlgError:
+                print("Error: Matrix A is singular. Iteration cannot continue.")
+                return np.full_like(A, np.nan)
+            A = A - PI @ X_PIdagger - PIdagger @ X_PI
+            As = As - PI @ X_PIdagger
+            PI = PI @ X_PI
+            PIdagger = PIdagger @ X_PIdagger
+
+
+        h12_dagger = h12.conj().T
+
+        try:
+
+            Y = spsolve(csc_matrix(As), h12_dagger)
+        except np.linalg.LinAlgError:
+            print("Error: Matrix As is singular for the final solve step.")
+            return np.full_like(As, np.nan)
+        Sigma = h12 @ Y
+
+        return Sigma
+    
     def get_layer_hamiltonian(self, p, side = "left") -> spa.csc_matrix:
         if not self.ky in self.layerHamiltonianCache:
             self.layerHamiltonianCache[self.ky] = self.ham.getLayersHamiltonian(self.ky)
@@ -35,7 +79,7 @@ class LeadSelfEnergy():
             raise ValueError("layers are indexed 1,2,...self.P")
         
         if side == "left":
-            p = 3 - (p-1)
+            p = 3 - (p-1) 
         elif side == "right":
             p = (self.ham.layer_right_lead + p)  % 4
         else:
@@ -49,39 +93,54 @@ class LeadSelfEnergy():
         side = "left"
         Hpp_matrices = [None] * self.P
         HpP_matrices = [None] * self.P
-        hPP,hPP1 = self.get_layer_hamiltonian(self.P, side)
-
-        HPP = Helper_functions.sparse_inverse(spa.csc_matrix(self.E * np.eye(hPP.shape[0]) - hPP))
+        hPP, hPP1 = self.get_layer_hamiltonian(self.P, side)
+        HPP = spsolve(spa.csc_matrix(self.E * np.eye(hPP.shape[0]) - hPP, dtype = complex), csc_matrix(np.eye(hPP.shape[0])))
+  
         Hpp_matrices[-1], HpP_matrices[-1] = HPP, HPP
         for i in range(self.P - 1, 0, -1):
-            
+
             hpp, hpp1 = self.get_layer_hamiltonian(i, side)
-            Hpp = Helper_functions.sparse_inverse(spa.csc_matrix(self.E * np.eye(hPP.shape[0]) - \
-                hpp - hpp1 @ Hpp_matrices[i] @ dagger(hpp1)))
+            Hpp = spsolve(spa.csc_matrix(self.E * np.eye(hPP.shape[0], dtype = complex) - \
+                hpp - hpp1 @ Hpp_matrices[i] @ dagger(hpp1)) \
+                    , csc_matrix(np.eye(hPP.shape[0])))
             Hpp_matrices[i - 1] = Hpp
+            
+            
             HpP = Hpp_matrices[i - 1] @ hpp1 @ HpP_matrices[i]
             HpP_matrices[i - 1] = HpP
             
-        C22 = Hpp_matrices[1]
-        C2P = HpP_matrices[1]
-        C_matrices = [None] * 4
-        C_matrices[1] = C22
+        C22_tilde = Hpp_matrices[1]  
+        C2P_tilde = HpP_matrices[1]  
+
+        C_matrices = [None] * (self.P + 1)
+        C_matrices[2] = C22_tilde
+
+
         for p in range(3, self.P + 1):
-            hpp, hpp1 = self.get_layer_hamiltonian(i, side)
-            C_matrices[p - 1] = Hpp_matrices[p - 1] + Hpp_matrices[p -1] @ (hpp1 @ C_matrices[p -2] @ dagger(hpp1)) @ Hpp_matrices[p - 1] 
+            _, h_p_minus_1_p = self.get_layer_hamiltonian(p - 1, side)
+            h_p_p_minus_1 = dagger(h_p_minus_1_p)
 
+            Hpp_tilde = Hpp_matrices[p - 1]
+            C_prev_tilde = C_matrices[p - 1]
+
+            inner_term = h_p_p_minus_1 @ C_prev_tilde @ dagger(h_p_p_minus_1)
+            C_matrices[p] = Hpp_tilde + Hpp_tilde @ inner_term @ Hpp_tilde
+
+ 
         h11, h12 = self.get_layer_hamiltonian(1, side)
+        _  , hP_P1 = self.get_layer_hamiltonian(self.P, side) 
 
-        XIs = h11 + h12 @ C_matrices[1] @ dagger(h12)
-        XI = XIs + dagger(hPP1) @ C_matrices[-1] @ hPP1
-        PI = h12 @ C2P @ hPP1
+        XIs = h11 + h12 @ C_matrices[2] @ dagger(h12)
+        CpP_tilde = C_matrices[self.P]
+        XI = XIs + dagger(hP_P1) @ CpP_tilde @ hP_P1
         
-        return XIs, XI, PI,h12
+        PI = h12 @ C2P_tilde @ hP_P1
+        
+        return XIs.toarray(), XI.toarray(), PI.toarray(), h12
 
     def construct_U_plus_and_Lambda_plus(eigenvalues, eigenvectors, n_dim, epsilon=0.1):
         abs_vals = np.abs(eigenvalues)
         
-
         is_propagating = np.isclose(abs_vals, 1.0)
         is_evanescent = (abs_vals < 1.0) & (abs_vals > epsilon)
         
@@ -125,7 +184,7 @@ class LeadSelfEnergy():
         eigenvalues, eigenvectors = eigs(A, M=B, sigma=1.0, which='LM')
 
         U_plus, Lambda = LeadSelfEnergy.construct_U_plus_and_Lambda_plus(eigenvalues, eigenvectors, T.shape[0], epsilon=0.1)
-
+        print(U_plus.shape)
         U_pseudo = np.linalg.pinv(U_plus)
         F = U_plus @ Lambda @ U_pseudo
 

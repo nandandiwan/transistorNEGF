@@ -333,7 +333,7 @@ class GreensFunction:
         print("finished backward")
         return G_R_diag, G_lesser_diag, gamma1, gamma2, sigmaL, sigmaR
     
-    def sparse_rgf_G_R(self, E, ky : float, self_energy_tol=1e-4):
+    def sparse_rgf_G_R(self, E, ky : float, self_energy_tol=1e-4, self_energy_iterative=True):
         
         """
         This recursively calcuates the green's function (retarded and lesser) as well
@@ -356,20 +356,23 @@ class GreensFunction:
         #sigmaL, sigmaR = self.self_energy(E, ky, tol=self_energy_tol)
         
         self_energy_start = time() 
-        sigmaL, sigmaR = self.lead_self_energy.get_self_energy(E, ky, side="left"), self.lead_self_energy.get_self_energy(E, ky, side="right")
+        if self_energy_iterative == True:
+            sigmaL, sigmaR = self.lead_self_energy.iterative_self_energy(E, ky, side="left"), self.lead_self_energy.iterative_self_energy(E, ky, side="right")
+        else:
+            raise Exception("this has not been implemented")
         self_energy_end = time()
         block_size = sigmaL.shape[0]
         gamma1 = 1j * (sigmaL - dagger(sigmaL))
         gamma2 = 1j * (sigmaR - dagger(sigmaR))
+        
+        I = csc_matrix(np.eye(sigmaL.shape[0]), dtype = complex)
         
 
         # Build effective onsite matrices per block: A_i = E·I - H_dense (subtract lead self energies on boundaries)
         forward_start = time()
         A_blocks = []
         for i in range(num_blocks):
-            # Convert sparse diagonal block to dense
-            H_dense = diagonal_blocks[i].toarray()
-            A_i = E * np.eye(H_dense.shape[0], dtype=complex) - H_dense
+            A_i = E * I - diagonal_blocks[i]
             if i == 0:
                 A_i -= sigmaL
             if i == num_blocks - 1:
@@ -379,20 +382,17 @@ class GreensFunction:
         # Forward propagation: compute g_R and g_lesser for each block
         g_R_blocks = []
 
-        I_blk = np.eye(block_size, dtype=complex)
+        #I_blk = np.eye(block_size, dtype=complex)
         # Block 0 - use spsolve for inversion column‐by‐column
-        g_r = np.linalg.solve(A_blocks[0], I_blk)
+        g_r = spsolve(A_blocks[0], I)
         g_R_blocks.append(g_r)
         
         # For blocks 1 ... (num_blocks-1)
         for i in range(1, num_blocks):
-            B = off_diagonal_blocks[i-1].toarray()  # coupling from block (i-1) to i
+            B = off_diagonal_blocks[i-1] 
             A_eff = A_blocks[i] - B @ g_R_blocks[i-1] @ dagger(B)
             # Use spsolve for inversion
-            if i != num_blocks - 1:
-                g_r = Helper_functions.sparse_inverse(csc_matrix(A_eff))
-            else:
-                g_r = np.linalg.solve(A_eff, I_blk)
+            g_r = spsolve(A_eff, I)
                 
             g_R_blocks.append(g_r)
 
@@ -407,7 +407,7 @@ class GreensFunction:
         for i in reversed(range(num_blocks - 1)):
 
             G_R[i] = g_R_blocks[i] @ (
-                I_blk
+                I
                 + A_blocks[i][0:block_size, 0:block_size] @ G_R[i + 1] @ A_blocks[i][0:block_size, 0:block_size] @ g_R_blocks[i]
             )
         backward_end = time()
