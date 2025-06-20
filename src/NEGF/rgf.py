@@ -397,7 +397,7 @@ class GreensFunction:
             g_R_blocks.append(g_r)
 
         forward_end = time()
-        # Backward propagation: incorporate non-local corrections (reversed loop kept as before)
+        # Backward propagation: incorporate non-local corrections 
         backward_start = time()
         G_R = [None] * num_blocks
 
@@ -413,10 +413,10 @@ class GreensFunction:
         backward_end = time()
         
         
-        print(f"Hamiltonian construction: {hamiltonian_end - hamiltonian_start} \n \
-              Self Energy construction: {self_energy_end - self_energy_start} \n \
-                  Forward iteration: {forward_end - forward_start} \n \
-                      Backward iteration: {backward_end - backward_start}")
+        # print(f"Hamiltonian construction: {hamiltonian_end - hamiltonian_start} \n \
+        #       Self Energy construction: {self_energy_end - self_energy_start} \n \
+        #           Forward iteration: {forward_end - forward_start} \n \
+        #               Backward iteration: {backward_end - backward_start}")
         return G_R, gamma1, gamma2, sigmaL, sigmaR
     
     
