@@ -22,11 +22,14 @@ class GreensFunction:
     def self_energy(self, E, ky, tol=1e-6):
         """
         This method creates the self energy terms based on the coupling and surface green's function 
+        
+        Sancho rubio method 
         """
         dagger = lambda A: A.conj().T
         
         # Coupling matrices
-        H00, H01 = self.ham.get_H00_H01(ky, sparse=True)
+        H00, H01 = self.ham.get_H00_H01(ky, sparse=False)
+    
         H10 = dagger(H01)
 
         # Surface Green's functions at left and right leads
@@ -37,7 +40,7 @@ class GreensFunction:
         sigma_left = H01 @ G_surf_left @ H10
         sigma_right = H10 @ G_surf_right @ H01
 
-        return sigma_left, sigma_right
+        return sigma_left[140:,140:], sigma_right[-140:,-140:]
     def surface_gf(self, Energy, H00, H10, tol=1e-6): 
         """ 
         This iteratively calculates the surface green's function for the lead based. 
@@ -48,6 +51,7 @@ class GreensFunction:
         dagger = lambda A: np.conjugate(A.T)
         
         I = np.eye(H00.shape[0], dtype=complex)
+ 
         H01 = dagger(H10)
 
         epsilon_s = H00.copy()
@@ -56,14 +60,16 @@ class GreensFunction:
         beta = dagger(H10).copy()
         err = 1.0
         first_time = True
+ 
 
         while err > tol:
-            if first_time:
-                inv_E = Helper_functions.sparse_inverse(csr_matrix(Energy * I) - csr_matrix(epsilon))
-                first_time = False
-            else:
+            inv_E = np.linalg.solve(Energy * I - epsilon, I)
+            # if first_time:
+            #     inv_E = Helper_functions.sparse_inverse(csr_matrix(Energy * I) - csr_matrix(epsilon))
+            #     first_time = False
+            # else:
 
-                inv_E = np.linalg.solve(Energy * I - epsilon, I)
+            #     inv_E = np.linalg.solve(Energy * I - epsilon, I)
         
             epsilon_s_new = epsilon_s + alpha @ inv_E @ beta
             epsilon_new = epsilon + beta @ inv_E @ alpha + alpha @ inv_E @ beta
@@ -359,7 +365,7 @@ class GreensFunction:
         if self_energy_iterative == True:
             sigmaL, sigmaR = self.lead_self_energy.iterative_self_energy(E, ky, side="left"), self.lead_self_energy.iterative_self_energy(E, ky, side="right")
         else:
-            raise Exception("this has not been implemented")
+            sigmaL,sigmaR = self.self_energy(E, ky)
         self_energy_end = time()
         block_size = sigmaL.shape[0]
         gamma1 = 1j * (sigmaL - dagger(sigmaL))
@@ -384,7 +390,15 @@ class GreensFunction:
 
         #I_blk = np.eye(block_size, dtype=complex)
         # Block 0 - use spsolve for inversion column‐by‐column
-        g_r = spsolve(A_blocks[0], I)
+        def density(A : csc_matrix):
+            return A.getnnz() / (A.shape[0] * A.shape[1])
+        
+        
+        if (density(A_blocks[0])) > 0.25:
+            g_r = csc_matrix(np.linalg.solve(A_blocks[0].toarray(), I.toarray()))
+        else:
+            g_r = spsolve(A_blocks[0], I)
+        
         g_R_blocks.append(g_r)
         
         # For blocks 1 ... (num_blocks-1)
@@ -392,6 +406,10 @@ class GreensFunction:
             B = off_diagonal_blocks[i-1] 
             A_eff = A_blocks[i] - B @ g_R_blocks[i-1] @ dagger(B)
             # Use spsolve for inversion
+            if (density(A_eff)) > 0.25:
+                g_r = csc_matrix(np.linalg.solve(A_eff.toarray(), I.toarray()))
+            else:
+                g_r = spsolve(A_eff, I)
             g_r = spsolve(A_eff, I)
                 
             g_R_blocks.append(g_r)

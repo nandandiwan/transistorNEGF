@@ -2,7 +2,7 @@ import numpy as np
 import scipy.constants as spc
 
 class Device:
-    def __init__(self, channel_length = 10e-9, channel_thickness = 3e-9, nx=40, nz=50, T=300.0, material_params=None):
+    def __init__(self, channel_length = 9.33e-9, channel_thickness = 3e-9, nx=40, nz=50, T=300.0, material_params=None):
         # Physical constants
         self.T = 300  # Kelvin
         self.q = spc.e
@@ -27,8 +27,8 @@ class Device:
         self.unitZ = int(self.channel_thickness // self.block_height)
         
         # voltage 
-        self.VG = 0.25
-        self.Vs = 0.1
+        self.VG = 0.0
+        self.Vs = 0
         self.Vd = 0
     
         # arrays for poisson 

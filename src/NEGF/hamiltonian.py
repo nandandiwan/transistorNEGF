@@ -121,14 +121,15 @@ class Hamiltonian:
     def get_H00_H01(self, ky, sparse=False):
         """out dated method"""
         oldUnitCell = self.unitCell
-        self.unitCell = UnitCell(self.Nz, 2)
-        if not sparse:
-            HT = self.create_tight_binding(ky)
-        else:
-            HT = self.create_sparse_hamlitonian(ky)
+        self.unitCell = UnitCell(self.Nz, 8)
+
+        HT = self.create_sparse_hamlitonian(ky)
+   
         H00 = HT[:80 * self.Nz, :80 * self.Nz]
         H01 = HT[80 * self.Nz:, :80 * self.Nz]
         self.unitCell = oldUnitCell
+        if sparse:
+            return H00.toarray(), H01.toarray()
         return H00, H01
     
     
@@ -317,7 +318,7 @@ class Hamiltonian:
             m = (block + 1) * block_size
             e = (block + 2) * block_size
             diagonal_blocks[block] = H[s : m, s : m] 
-            off_diagonal_blocks[block] = H[m : e, m : e]
+            off_diagonal_blocks[block] = H[s : m, m : e]
         diagonal_blocks[-1] = H[-block_size:, -block_size:]       
 
         return diagonal_blocks, off_diagonal_blocks

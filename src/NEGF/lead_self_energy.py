@@ -21,7 +21,7 @@ class LeadSelfEnergy():
         self.layerHamiltonianCache = {}
         self.layerHamiltonianCache[self.ky] = self.ham.getLayersHamiltonian(self.ky)
         
-        self.eta = 1e-9j
+        self.eta = 1e-8j
     
     def set_inputs(self, E, ky):
         self.E = E
@@ -81,7 +81,7 @@ class LeadSelfEnergy():
         if side == "left":
             p = 3 - (p-1) 
         elif side == "right":
-            p = (self.ham.layer_right_lead + p)  % 4
+            p = (self.ham.layer_right_lead + p - 1)  % 4
         else:
             raise ValueError("there is only left and right sides") 
         
@@ -90,19 +90,18 @@ class LeadSelfEnergy():
     
     def decomposition_algorithm(self, side="left"):
         dagger = lambda A: np.conjugate(A.T)
-        side = "left"
         Hpp_matrices = [None] * self.P
         HpP_matrices = [None] * self.P
         hPP, hPP1 = self.get_layer_hamiltonian(self.P, side)
-        HPP = spsolve(spa.csc_matrix(self.E * np.eye(hPP.shape[0]) - hPP, dtype = complex), csc_matrix(np.eye(hPP.shape[0])))
+        HPP = spsolve(spa.csc_matrix(self.E * np.eye(hPP.shape[0], dtype=complex) - hPP, dtype = complex), csc_matrix(np.eye(hPP.shape[0], dtype=complex)))
   
         Hpp_matrices[-1], HpP_matrices[-1] = HPP, HPP
         for i in range(self.P - 1, 0, -1):
 
             hpp, hpp1 = self.get_layer_hamiltonian(i, side)
             Hpp = spsolve(spa.csc_matrix(self.E * np.eye(hPP.shape[0], dtype = complex) - \
-                hpp - hpp1 @ Hpp_matrices[i] @ dagger(hpp1)) \
-                    , csc_matrix(np.eye(hPP.shape[0])))
+                hpp - hpp1 @ Hpp_matrices[i] @ dagger(hpp1),dtype=complex) \
+                    , csc_matrix(np.eye(hPP.shape[0]), dtype=complex))
             Hpp_matrices[i - 1] = Hpp
             
             
