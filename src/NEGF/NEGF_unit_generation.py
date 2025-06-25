@@ -49,18 +49,8 @@ class UnitCell:
     
     
     """We divide the atoms into 4 layers - 100 cleaving"""
-    raw_atoms = {
-        0 : [Atom(0,0,0), Atom(0, 0.5,0.5)],
-        1 : [Atom(0.25,0.25,0.25), Atom(0.25,0.75,0.75)],
-        2 : [Atom(0.5,0.5,0), Atom(0.5,0,0.5)],
-        3 : [Atom(0.75,0.75,0.25), Atom(0.75, 0.25,0.75)]
-    }
-    
-    @staticmethod
-    def baseCoordinates(nx=1, nz = 1):
-        "returns nth layer base coordinates" 
-        atoms =  list(map(lambda x: x.add((int((nx - 1) // 4), 0, nz - 1)), UnitCell.raw_atoms[(nx - 1) % 4]))
-        return atoms
+
+
     @staticmethod
     def determine_hybridization(delta):
         sign_pattern = np.sign(delta)
@@ -73,15 +63,26 @@ class UnitCell:
         elif np.array_equal(sign_pattern, [-1, -1, 1]):   # Type d
             return 3
     
-    def __init__(self, vertical_blocks : int, channel_blocks : int):
+    def __init__(self, vertical_blocks : int, channel_blocks : int, orientiation = (0,1,2,3)):
         self.Nz = vertical_blocks
         self.Nx = channel_blocks # this transport direction
         
+        position = {}
+        for i, val in enumerate(orientiation):
+            position[val] = i
+        
+        self.raw_atoms = {
+            position[0] : [Atom(0.25 * position[0],0,0), Atom(0.25 * position[0], 0.5,0.5)],
+            position[1] : [Atom(0.25 * position[1],0.25,0.25), Atom(0.25 * position[1],0.75,0.75)],
+            position[2] : [Atom(0.25 * position[2],0.5,0), Atom(0.25 * position[2],0,0.5)],
+            position[3] : [Atom(0.25 * position[3],0.75,0.25), Atom(0.25 * position[3], 0.25,0.75)]
+        }
+
         self.ATOM_POSITIONS = []
         self.XZ_map = {}
         for layerX in range(1, self.Nx + 1):
             for layerZ in range(1, self.Nz + 1):
-                self.ATOM_POSITIONS.extend(UnitCell.baseCoordinates(layerX, layerZ))
+                self.ATOM_POSITIONS.extend(self.baseCoordinates(layerX, layerZ))
 
         for atom in self.ATOM_POSITIONS:
             nx,ny,nz = atom.x,atom.y,atom.z
@@ -90,7 +91,9 @@ class UnitCell:
         self.danglingBondsZ = {} # this is for hydrogen passivation
         self.danglinbBondsX = set() # testing purposes (get handled through self energy terms)
         self.neighbors = self.mapNeighbors()
-        
+    
+    
+
         
     def check_in_z_direction(self, atom : Atom):
         return not (atom.z >= self.Nz or atom.z < 0)
@@ -99,6 +102,10 @@ class UnitCell:
     def check_in_y_direction(self, atom : Atom):
         return not (atom.y >= 1 or atom.y < 0) 
     
+    def baseCoordinates(self, nx=1, nz = 1):
+        "returns nth layer base coordinates" 
+        atoms =  list(map(lambda x: x.add((int((nx - 1) // 4), 0, nz - 1)), self.raw_atoms[(nx - 1) % 4]))
+        return atoms
     def mapNeighbors(self):
         """This gives the list of neighbors of an atom
         For example say i am working with atom at 0.25,.25,.25. I find the sublattice and then the neighbors.

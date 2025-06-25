@@ -13,6 +13,12 @@ class Solve:
         self.ham = Hamiltonian(device)
         self.GF = GreensFunction(device, self.ham)
         
+        
+    def gf_calculations_k_space(self) -> list:
+        """Uses multiprocessing to return """
+        return 
+    
+     
 
     
     

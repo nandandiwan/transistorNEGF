@@ -48,10 +48,31 @@ class Hamiltonian:
         
     
     def getLayersHamiltonian(self, ky) -> dict:
+        """
+        Returns the layer Hamiltonians for the condensed system.
+        
+        Returns:
+            dict: Dictionary with keys 0,1,2,3 (for 4-layer unit cell) containing
+                  [H_pp, H_p,p+1] pairs for each layer p
+        """
         layersH00, layersH01 = self.create_sparse_channel_hamlitonian(ky, self.tempUnitCell)
         layers = {}
-        for layer in range(4):
-            layers[layer] = [layersH00[layer], layersH01[layer]]
+        
+        # For a 4-layer unit cell, we have layers 0,1,2,3
+        # layersH00[i] contains H_ii (diagonal blocks)
+        # layersH01[i] contains H_i,i+1 (off-diagonal blocks)
+        for layer in range(min(4, len(layersH00))):
+            H_pp = layersH00[layer]  # H_layer,layer
+            
+            # H_p,p+1 coupling - check if off-diagonal block exists
+            if layer < len(layersH01):
+                H_p_p1 = layersH01[layer]  # H_layer,layer+1
+            else:
+                # For the last layer, there's no coupling to next layer
+                H_p_p1 = None
+                
+            layers[layer] = [H_pp, H_p_p1]
+            
         return layers        
         
         
@@ -116,19 +137,23 @@ class Hamiltonian:
     
     
     
-    
-    
-    def get_H00_H01(self, ky, sparse=False):
-        """out dated method"""
-        oldUnitCell = self.unitCell
-        self.unitCell = UnitCell(self.Nz, 8)
-
-        HT = self.create_sparse_hamlitonian(ky)
-   
+    def get_H00_H01(self,ky, side = "left", sparse = False):
+        if side == "left":
+            orientation = (3,2,1,0) # goes backwards
+        else:
+            orientation = ((self.layer_right_lead + 1) % 4, \
+                (self.layer_right_lead + 2) % 4,  \
+                    (self.layer_right_lead + 3) % 4, \
+                        (self.layer_right_lead + 4) % 4 )
+        
+        newUnitCell = UnitCell(self.Nz, 8, orientiation=orientation)
+        
+        HT = self.create_sparse_channel_hamlitonian(ky,unitCell = newUnitCell, blocks=False)
+        
         H00 = HT[:80 * self.Nz, :80 * self.Nz]
-        H01 = HT[80 * self.Nz:, :80 * self.Nz]
-        self.unitCell = oldUnitCell
-        if sparse:
+        H01 = HT[: (80) * self.Nz,(80) * self.Nz :(160) * self.Nz]
+    
+        if sparse==False:
             return H00.toarray(), H01.toarray()
         return H00, H01
     
@@ -137,94 +162,7 @@ class Hamiltonian:
     def getMatrixSize(self):
         return len(self.unitCell.ATOM_POSITIONS) * 10
     
-    def create_sparse_hamlitonian(self, ky, unitCell : UnitCell = None):
-        
-        if unitCell is None:
-            unitCell = self.unitCell
-
-
-        unitNeighbors = unitCell.neighbors
-        danglingBonds = unitCell.danglingBondsZ
-        numSilicon = len(unitNeighbors.keys())
-
-        orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
-        numOrbitals = len(orbitals)
-        size = numSilicon * numOrbitals 
-        A = np.zeros((size, size), dtype=complex)    
-        
-        atomToIndex = {}
-        indexToAtom = {}
-        for atom_index,atom in enumerate(unitNeighbors):
-            atomToIndex[atom] = atom_index
-            indexToAtom[atom_index] = atom
-        
-        
-        
-        numSilicon = len(unitNeighbors.keys())
-
-        orbitals = ['s', 'px', 'py', 'pz', 'dxy','dyz','dzx','dx2y2','dz2', 's*']
-        numOrbitals = len(orbitals)
-        size = numSilicon * numOrbitals 
-        
-        atomToIndex = {}
-        indexToAtom = {}
-        for atom_index,atom in enumerate(unitNeighbors):
-            atomToIndex[atom] = atom_index
-            indexToAtom[atom_index] = atom
-
-        rows, cols, data = [], [], []                   # <-- sparse triplets
-
-        # helper -----------------------------------------------------------
-        def add(i, j, val):
-            if val != 0.0:
-                rows.append(i); cols.append(j); data.append(val)
-                if i != j:                              # Hermitian
-                    rows.append(j); cols.append(i); data.append(np.conj(val))
-        # ------------------------------------------------------------------
-
-        # ---------- on‑site (Si) ----------
-        
-        for atom_idx, atom in indexToAtom.items():
-
-            hybridizationMatrix = self.H_sp3_explicit.copy() 
-            danglingBondsList = danglingBonds[atom]
-            for danglingBondAtom, position in danglingBondsList:
-                hybridizationMatrix[position,position] += TBP.E['sp3']            
-            
-            # if there are no dangling bonds this returns the standard diag matrix with onsite energies 
-        
-            onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T 
-            base = atom_idx * numOrbitals
-            for i in range(4):
-                for j in range(i ,4):
-                    add(base + i, base + j, onsiteMatrix[i,j])
-        
-            for p in range(4, 9):                       # five d’s
-                add(base + p, base + p, TBP.E['dxy'] )
-            add(base + 9, base + 9, TBP.E['s*'])
-        
-    
-        for atom_index, atom in indexToAtom.items():
-            base_i = atom_index * numOrbitals
-            for atom2, delta, l,m,n in unitNeighbors[atom]:
-                j = atomToIndex[atom2]
-                if j < atom_index:             
-                    continue                   
-
-                phase = np.exp(2j*np.pi*(ky*delta[1]))
-
-                for o1, orb1 in enumerate(orbitals):
-                    for o2, orb2 in enumerate(orbitals):
-                        hop = TBP.SK[(orb1, orb2)](l, m, n, TBP.V) * phase
-                        add(base_i + o1, j*numOrbitals + o2, hop)
-
-                
-    
-        H = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsr()
-
-        return H
-    
-    def create_sparse_channel_hamlitonian(self, ky, unitCell : UnitCell = None):
+    def create_sparse_channel_hamlitonian(self, ky, unitCell : UnitCell = None, blocks = True):
         if unitCell is None:
             unitCell = self.unitCell
 
@@ -280,6 +218,7 @@ class Hamiltonian:
         
             onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T 
             base = atom_idx * numOrbitals
+    
             for i in range(4):
                 for j in range(i ,4):
                     add(base + i, base + j, onsiteMatrix[i,j] + potentialPerAtom[atom_idx] * (i == j))
@@ -305,8 +244,9 @@ class Hamiltonian:
 
                 
     
-        H = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsr()
-        
+        H = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsc()
+        if blocks == False:
+            return H
         total_size = H.shape[0]
         block_size = self.Nz * 20 # 2 atoms per single unit z layer 
         num_blocks = (int) (total_size // block_size)
@@ -319,7 +259,7 @@ class Hamiltonian:
             e = (block + 2) * block_size
             diagonal_blocks[block] = H[s : m, s : m] 
             off_diagonal_blocks[block] = H[s : m, m : e]
-        diagonal_blocks[-1] = H[-block_size:, -block_size:]       
+        diagonal_blocks[-1] = H[-block_size:, -block_size:]     
 
         return diagonal_blocks, off_diagonal_blocks
     

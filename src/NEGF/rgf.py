@@ -15,7 +15,7 @@ class GreensFunction:
     def __init__(self, device_state : Device, ham : Hamiltonian):
         self.ds = device_state
         self.ham = ham
-        self.eta = 1e-12j
+        self.eta = 1e-6j  # Increase eta for numerical stability
         self.lead_self_energy = LeadSelfEnergy(device_state, ham)
         
 
@@ -33,14 +33,14 @@ class GreensFunction:
         H10 = dagger(H01)
 
         # Surface Green's functions at left and right leads
-        G_surf_left = self.surface_gf(E - self.ds.Vs, H00, H10, tol) # units are in ev
+        G_surf_left = self.surface_gf(E - self.ds.Vs, np.transpose(np.flip(H00, axis=(0, 1))), np.transpose(np.flip(H10, axis=(0, 1))), tol) # units are in ev
         G_surf_right = self.surface_gf(E - self.ds.Vd, H00, H10, tol)
 
         # Self-energy calculation (Σ = τ g τ†)
-        sigma_left = H01 @ G_surf_left @ H10
+        sigma_left = np.transpose(np.flip(H01, axis=(0, 1))) @ G_surf_left @ np.transpose(np.flip(H10, axis=(0, 1)))
         sigma_right = H10 @ G_surf_right @ H01
 
-        return sigma_left[140:,140:], sigma_right[-140:,-140:]
+        return sigma_left[:self.ham.Nz * 20,:self.ham.Nz * 20], sigma_right[-self.ham.Nz * 20:,-self.ham.Nz * 20:]
     def surface_gf(self, Energy, H00, H10, tol=1e-6): 
         """ 
         This iteratively calculates the surface green's function for the lead based. 
@@ -339,7 +339,7 @@ class GreensFunction:
         print("finished backward")
         return G_R_diag, G_lesser_diag, gamma1, gamma2, sigmaL, sigmaR
     
-    def sparse_rgf_G_R(self, E, ky : float, self_energy_tol=1e-4, self_energy_iterative=True):
+    def old_sparse_rgf_G_R(self, E, ky : float, self_energy_tol=1e-4, self_energy_iterative=False):
         
         """
         This recursively calcuates the green's function (retarded and lesser) as well
@@ -378,11 +378,11 @@ class GreensFunction:
         forward_start = time()
         A_blocks = []
         for i in range(num_blocks):
-            A_i = E * I - diagonal_blocks[i]
+            A_i = csc_matrix(E * I - diagonal_blocks[i])
             if i == 0:
-                A_i -= sigmaL
+                A_i -= csc_matrix(sigmaL)
             if i == num_blocks - 1:
-                A_i -= sigmaR
+                A_i -= csc_matrix(sigmaR)
             A_blocks.append(A_i)
         
         # Forward propagation: compute g_R and g_lesser for each block
@@ -437,5 +437,148 @@ class GreensFunction:
         #               Backward iteration: {backward_end - backward_start}")
         return G_R, gamma1, gamma2, sigmaL, sigmaR
     
-    
+    def sparse_rgf_G_R(self, E, ky, self_energy_tol=1e-4, self_energy_iterative=False, RGF=True):
+        from scipy.sparse import csc_matrix, identity
+        from scipy.sparse.linalg import spsolve
         
+        E = E + self.eta
+        dagger = lambda A: A.conj().T
+        
+        if RGF == False:
+            H = self.ham.create_sparse_channel_hamlitonian(0.1, blocks=False)
+
+            sl = csc_matrix(self.lead_self_energy.iterative_self_energy(0, 0, "left"))
+            sr = csc_matrix(self.lead_self_energy.iterative_self_energy(0, 0, "right"))
+            block_size = sl.shape[0]
+            H[:block_size, :block_size] += sl
+            H[-block_size:,-block_size:] += sr
+
+            H = csc_matrix(np.eye(H.shape[0], dtype=complex) * E) - H
+
+            I = csc_matrix(np.eye(H.shape[0], dtype=complex))
+
+            H.shape[0]
+            
+
+            A = spsolve(H,I)    
+            gamma1 = 1j * (sigmaL - dagger(sigmaL))
+            gamma2 = 1j * (sigmaR - dagger(sigmaR))
+            
+            return A, sl, sr, gamma1, gamma2
+        
+        # Get Hamiltonian blocks
+        diagonal_blocks, off_diagonal_blocks = self.ham.create_sparse_channel_hamlitonian(ky)
+    
+ 
+        num_blocks = len(diagonal_blocks)
+        
+        # Get self-energies
+        if self_energy_iterative:
+            sigmaL = self.lead_self_energy.iterative_self_energy(E, ky, side="left")
+            sigmaR = self.lead_self_energy.iterative_self_energy(E, ky, side="right")
+        else:
+            sigmaL, sigmaR = self.self_energy(E, ky)
+        
+        block_size = sigmaL.shape[0]
+        I = identity(block_size, dtype=complex, format='csc')
+        
+        # Build A matrices: A_i = E*I - H_ii - Σ_boundary
+        A_blocks = []
+        for i in range(num_blocks):
+            A_i = E * I - diagonal_blocks[i]
+            if i == 0:
+                A_i = A_i - csc_matrix(sigmaL)
+            if i == num_blocks - 1:
+                A_i = A_i - csc_matrix(sigmaR)
+            A_blocks.append(A_i)
+        
+        # Forward propagation
+        g_R_blocks = []
+        
+        # Block 0
+        g_r = self.spsolve_matrix(A_blocks[0], I)
+        g_R_blocks.append(g_r)
+        
+        # Blocks 1 to num_blocks-1
+        for i in range(1, num_blocks):
+            B = -off_diagonal_blocks[i-1]  # Coupling from block i-1 to i
+            B_dag = B.conj().T
+            
+            # A_eff = A_i - B @ g_R_{i-1} @ B†
+            A_eff = A_blocks[i] - B @ g_R_blocks[i-1] @ B_dag
+            g_r = self.spsolve_matrix(A_eff, I)
+            g_R_blocks.append(g_r)
+        
+        # Backward propagation
+        G_R = [None] * num_blocks
+        G_R[-1] = g_R_blocks[-1]
+        
+        for i in reversed(range(num_blocks - 1)):
+            B = -off_diagonal_blocks[i]  # Coupling from block i to i+1
+            B_dag = B.conj().T
+            
+            # G_R[i] = g_R[i] @ (I + B @ G_R[i+1] @ B† @ g_R[i])
+            temp = I + B @ G_R[i + 1] @ B_dag @ g_R_blocks[i]
+            G_R[i] = g_R_blocks[i] @ temp
+        
+        gamma1 = 1j * (sigmaL - dagger(sigmaL))
+        gamma2 = 1j * (sigmaR - dagger(sigmaR))
+        
+        return G_R, gamma1, gamma2, sigmaL, sigmaR
+
+    def spsolve_matrix(self, A, B):
+        """Helper function to solve A @ X = B where B is a matrix
+        
+        For RGF, this typically computes A^(-1) when B = I (identity matrix)
+        Returns the solution X such that A @ X = B
+        """
+        from scipy.sparse import csc_matrix
+        from scipy.sparse.linalg import spsolve
+        
+        # Handle different input types
+        if hasattr(B, 'toarray'):
+            B_dense = B.toarray()
+        else:
+            B_dense = B
+            
+        if hasattr(A, 'toarray'):
+            # A is sparse
+    
+            return csc_matrix(spsolve(A, B))
+        else:
+            # A is dense - use numpy
+            solution = np.linalg.solve(A, B_dense)
+            return csc_matrix(solution)   
+    
+    
+    def rgf_inverse(A=None, block_size=None, diagonal_blocks = None, off_diagonal_blocks = None):
+        """gets the diagonal elements of the inverse"""
+        if diagonal_blocks is None:
+            N = A.shape[0]
+            num_blocks = (int) (N // block_size)
+            diagonal_blocks = [A[block_size * i : block_size * (i + 1), block_size * i : block_size * (i + 1) ]for i in range(num_blocks)]
+            off_diagonal_blocks = [A[block_size * i : block_size * (i + 1), block_size * (i+1) : block_size * (i + 2) ]for i in range(num_blocks - 1)]
+        else:
+            num_blocks = len(diagonal_blocks)
+            block_size = diagonal_blocks[0].shape[0]
+        
+        I = np.eye(block_size, dtype= complex)
+        G_R      = [None] * num_blocks
+        g_r_blocks = [None] * num_blocks
+        g_r_blocks[0] = np.linalg.solve(diagonal_blocks[0], I)
+        for i in range(1, num_blocks):
+            B = off_diagonal_blocks[i - 1]
+            B_dag =B.conj().T
+            
+            A_eff = diagonal_blocks[i] - B @ g_r_blocks[i-1] @ B_dag
+            g_r = np.linalg.solve(A_eff, I)
+            g_r_blocks[i] = g_r
+                    
+        G_R[-1] = g_r_blocks[-1]
+        for i in reversed(range(num_blocks - 1)):
+            B = -off_diagonal_blocks[i]  # Coupling from block i to i+1
+            B_dag = B.conj().T
+            temp = I + B @ G_R[i + 1] @ B_dag @ g_r_blocks[i]
+            G_R[i] = g_r_blocks[i] @ temp    
+        
+        return G_R
