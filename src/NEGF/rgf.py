@@ -28,7 +28,7 @@ class GreensFunction:
         dagger = lambda A: A.conj().T
         
         # Coupling matrices
-        H00, H01 = self.ham.get_H00_H01(ky, sparse=False)
+        H00, H01, H10 = self.ham.get_H00_H01_H10(ky, sparse=False)
     
         H10 = dagger(H01)
 
@@ -64,13 +64,6 @@ class GreensFunction:
 
         while err > tol:
             inv_E = np.linalg.solve(Energy * I - epsilon, I)
-            # if first_time:
-            #     inv_E = Helper_functions.sparse_inverse(csr_matrix(Energy * I) - csr_matrix(epsilon))
-            #     first_time = False
-            # else:
-
-            #     inv_E = np.linalg.solve(Energy * I - epsilon, I)
-        
             epsilon_s_new = epsilon_s + alpha @ inv_E @ beta
             epsilon_new = epsilon + beta @ inv_E @ alpha + alpha @ inv_E @ beta
             alpha_new = alpha @ inv_E @ alpha

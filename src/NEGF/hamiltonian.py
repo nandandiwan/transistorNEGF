@@ -137,26 +137,30 @@ class Hamiltonian:
     
     
     
-    def get_H00_H01(self,ky, side = "left", sparse = False):
+    def get_H00_H01_H10(self, ky, side="left", sparse=False):
+        """
+        Get H00, H01, and H10 matrices for both leads.
+        """
+        # Both leads use the same orientation (0,1,2,3) for now
         if side == "left":
-            orientation = (3,2,1,0) # goes backwards
+            orientation = (0, 1, 2, 3)
         else:
-            orientation = ((self.layer_right_lead + 1) % 4, \
-                (self.layer_right_lead + 2) % 4,  \
-                    (self.layer_right_lead + 3) % 4, \
-                        (self.layer_right_lead + 4) % 4 )
+            orientation = (0, 1, 2, 3)
         
         newUnitCell = UnitCell(self.Nz, 8, orientiation=orientation)
-        
-        HT = self.create_sparse_channel_hamlitonian(ky,unitCell = newUnitCell, blocks=False)
+        HT = self.create_sparse_channel_hamlitonian(ky, unitCell=newUnitCell, blocks=False)
         
         H00 = HT[:80 * self.Nz, :80 * self.Nz]
-        H01 = HT[: (80) * self.Nz,(80) * self.Nz :(160) * self.Nz]
-    
-        if sparse==False:
-            return H00.toarray(), H01.toarray()
-        return H00, H01
-    
+        
+        # H01: coupling from current unit cell to next unit cell (layer 3 → layer 0)
+        H01 = HT[:80 * self.Nz, 80 * self.Nz:160 * self.Nz]
+        
+        # H10: coupling from next unit cell to current unit cell (layer 0 → layer 3)
+        H10 = HT[80 * self.Nz:160 * self.Nz, :80 * self.Nz]
+        
+        if sparse == False:
+            return H00.toarray(), H01.toarray(), H10.toarray()
+        return H00, H01, H10
     
     
     def getMatrixSize(self):
