@@ -47,7 +47,7 @@ class Hamiltonian:
         self.tempUnitCell = UnitCell(self.Nz, 5)
         
     
-    def getLayersHamiltonian(self, ky) -> dict:
+    def getLayersHamiltonian(self, ky, side="left") -> dict:
         """
         Returns the layer Hamiltonians for the condensed system.
         
@@ -55,7 +55,14 @@ class Hamiltonian:
             dict: Dictionary with keys 0,1,2,3 (for 4-layer unit cell) containing
                   [H_pp, H_p,p+1] pairs for each layer p
         """
-        layersH00, layersH01 = self.create_sparse_channel_hamlitonian(ky, self.tempUnitCell)
+        if (side == "left"):
+            orientation = (0, 1, 2, 3)
+        else:
+            orientation = ((self.layer_right_lead + 1) % 4, (self.layer_right_lead + 2) % 4, \
+                (self.layer_right_lead + 3) % 4, (self.layer_right_lead + 4) % 4)
+        tempUnitCell = UnitCell(self.Nz, 5, orientiation=orientation)
+        
+        layersH00, layersH01 = self.create_sparse_channel_hamlitonian(ky, tempUnitCell)
         layers = {}
         
         # For a 4-layer unit cell, we have layers 0,1,2,3
@@ -145,7 +152,8 @@ class Hamiltonian:
         if side == "left":
             orientation = (0, 1, 2, 3)
         else:
-            orientation = (0, 1, 2, 3)
+            orientation = ((self.layer_right_lead + 1) % 4, (self.layer_right_lead + 2) % 4, \
+                (self.layer_right_lead + 3) % 4, (self.layer_right_lead + 4) % 4)
         
         newUnitCell = UnitCell(self.Nz, 8, orientiation=orientation)
         HT = self.create_sparse_channel_hamlitonian(ky, unitCell=newUnitCell, blocks=False)
@@ -268,16 +276,19 @@ class Hamiltonian:
         return diagonal_blocks, off_diagonal_blocks
     
     def potential_correction(self):
-        voltage = self.device.Ec
+        # For testing bandgap opening, return zeros to isolate dangling bond effects
+        return [0.0] * len(self.unitCell.ATOM_POSITIONS) * 10
         
-        L, H = voltage.shape
-        potential_diag = [None] * len(self.unitCell.ATOM_POSITIONS) * 10
-        for atom_index,atom in enumerate(self.unitCell.neighbors):
-            px, pz = atom.x, atom.z
-            gx = (int) (px / self.Nx * L)
-            gz = (int) (pz / self.Nz * H)
-            
-            pot = voltage[gx, gz]
-            potential_diag[atom_index] = pot
+        # Or fix the original method:
+        # voltage = self.device.Ec
+        # L, H = voltage.shape
+        # potential_diag = [0.0] * len(self.unitCell.ATOM_POSITIONS)  # Initialize with zeros
         
-        return potential_diag       
+        # for atom_index, atom in enumerate(self.unitCell.neighbors):
+        #     px, pz = atom.x, atom.z
+        #     # Ensure proper grid mapping
+        #     gx = min(max(int(px / self.Nx * L), 0), L-1)
+        #     gz = min(max(int(pz / self.Nz * H), 0), H-1)
+        #     potential_diag[atom_index] = voltage[gx, gz]
+        
+        # return potential_diag    

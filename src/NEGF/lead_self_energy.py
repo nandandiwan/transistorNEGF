@@ -3,10 +3,11 @@
 from device import Device
 import scipy.sparse as spa 
 import scipy as sp
-import numpy.linalg as linalg
+from scipy import linalg
 import numpy as np
 from scipy.sparse import bmat, identity, random, csc_matrix
 from scipy.sparse.linalg import eigsh, eigs, spsolve
+
 from hamiltonian import Hamiltonian
 class LeadSelfEnergy():
     def __init__(self, device : Device, hamiltonian : Hamiltonian):
@@ -29,7 +30,7 @@ class LeadSelfEnergy():
         self.ky = ky
         
     @staticmethod
-    def GzerozeroH_W_sparse(wmH: sp.spmatrix, t: sp.spmatrix) -> np.ndarray:
+    def GzerozeroH_W_sparse(wmH: spa.spmatrix, t: spa.spmatrix) -> np.ndarray:
         """
         Surface Green's function calculation optimized for sparse matrices.
         """
@@ -96,13 +97,13 @@ class LeadSelfEnergy():
         eta = 1e-6
             
         if side == "left":
-            wmH = (E - self.ds.Vs) * sp.eye(N, dtype=complex) - H00 + 1j * eta * sp.eye(N, dtype=complex)
+            wmH = (E - self.ds.Vs) * spa.eye(N, dtype=complex) - H00 + 1j * eta * spa.eye(N, dtype=complex)
             Gzeta = LeadSelfEnergy.GzerozeroH_W_sparse(wmH, H10)
 
             selfenergy = H10.toarray() @ Gzeta @ H10.conj().T.toarray()
             return selfenergy[:ham.Nz * 10,:ham.Nz * 10]
         else:
-            wmH = (E - self.ds.Vd) * sp.eye(N, dtype=complex) - H00 + 1j * eta * sp.eye(N, dtype=complex)
+            wmH = (E - self.ds.Vd) * spa.eye(N, dtype=complex) - H00 + 1j * eta * spa.eye(N, dtype=complex)
             Gzeta = LeadSelfEnergy.GzerozeroH_W_sparse(wmH, H01)
             selfenergy = H01.toarray() @ Gzeta @ H01.conj().T.toarray()
             return selfenergy[-ham.Nz * 10:,-ham.Nz * 10:]

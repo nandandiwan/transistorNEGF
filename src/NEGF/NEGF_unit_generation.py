@@ -1,4 +1,10 @@
 import numpy as np
+import os
+import sys
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
 class Atom:
     def __init__(self, x, y, z):
         self.x = x
@@ -63,10 +69,10 @@ class UnitCell:
         elif np.array_equal(sign_pattern, [-1, -1, 1]):   # Type d
             return 3
     
-    def __init__(self, vertical_blocks : int, channel_blocks : int, orientiation = (0,1,2,3)):
+    def __init__(self, vertical_blocks : int, channel_blocks : int, orientiation = (0,1,2,3), not_NEGF = False):
         self.Nz = vertical_blocks
         self.Nx = channel_blocks # this transport direction
-        
+        self.not_NEGF = not_NEGF
         position = {}
         for i, val in enumerate(orientiation):
             position[val] = i
@@ -91,6 +97,8 @@ class UnitCell:
         self.danglingBondsZ = {} # this is for hydrogen passivation
         self.danglinbBondsX = set() # testing purposes (get handled through self energy terms)
         self.neighbors = self.mapNeighbors()
+        
+        
     
     
 
@@ -124,6 +132,9 @@ class UnitCell:
                 if not self.check_in_z_direction(neighbor):
                     self.danglingBondsZ[atom].append((neighbor, UnitCell.determine_hybridization(delta)))
                 elif not self.check_in_x_direction(neighbor):
+                    if self.not_NEGF:
+                        self.danglingBondsZ[atom].append((neighbor, UnitCell.determine_hybridization(delta)))    
+                    
                     self.danglinbBondsX.add(neighbor)
                 else:
                     l,m,n = UnitCell.directionalCosine(delta)
