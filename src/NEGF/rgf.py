@@ -17,63 +17,7 @@ class GreensFunction:
         self.ham = ham
         self.eta = 1e-6j  # Increase eta for numerical stability
         self.lead_self_energy = LeadSelfEnergy(device_state, ham)
-        
 
-    def self_energy(self, E, ky, tol=1e-6):
-        """
-        This method creates the self energy terms based on the coupling and surface green's function 
-        
-        Sancho rubio method 
-        """
-        dagger = lambda A: A.conj().T
-        
-        # Coupling matrices
-        H00, H01, H10 = self.ham.get_H00_H01_H10(ky, sparse=False)
-    
-        H10 = dagger(H01)
-
-        # Surface Green's functions at left and right leads
-        G_surf_left = self.surface_gf(E - self.ds.Vs, np.transpose(np.flip(H00, axis=(0, 1))), np.transpose(np.flip(H10, axis=(0, 1))), tol) # units are in ev
-        G_surf_right = self.surface_gf(E - self.ds.Vd, H00, H10, tol)
-
-        # Self-energy calculation (Σ = τ g τ†)
-        sigma_left = np.transpose(np.flip(H01, axis=(0, 1))) @ G_surf_left @ np.transpose(np.flip(H10, axis=(0, 1)))
-        sigma_right = H10 @ G_surf_right @ H01
-
-        return sigma_left[:self.ham.Nz * 20,:self.ham.Nz * 20], sigma_right[-self.ham.Nz * 20:,-self.ham.Nz * 20:]
-    def surface_gf(self, Energy, H00, H10, tol=1e-6): 
-        """ 
-        This iteratively calculates the surface green's function for the lead based. 
-        Although it is tested for 1D, it should be good for 2D surfaces. 
-        """
-
-        Energy = Energy
-        dagger = lambda A: np.conjugate(A.T)
-        
-        I = np.eye(H00.shape[0], dtype=complex)
- 
-        H01 = dagger(H10)
-
-        epsilon_s = H00.copy()
-        epsilon = H00.copy()
-        alpha = H01.copy()
-        beta = dagger(H10).copy()
-        err = 1.0
-        first_time = True
- 
-
-        while err > tol:
-            inv_E = np.linalg.solve(Energy * I - epsilon, I)
-            epsilon_s_new = epsilon_s + alpha @ inv_E @ beta
-            epsilon_new = epsilon + beta @ inv_E @ alpha + alpha @ inv_E @ beta
-            alpha_new = alpha @ inv_E @ alpha
-            beta_new = beta @ inv_E @ beta
-
-            err = np.linalg.norm(alpha_new, ord='fro')
-
-            epsilon_s, epsilon, alpha, beta = epsilon_s_new, epsilon_new, alpha_new, beta_new
-
-        return  np.linalg.solve(Energy * I - epsilon_s, I)
     def fermi(x):
         return 1 / (1 + np.exp(x))
     

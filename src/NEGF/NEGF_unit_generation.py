@@ -17,6 +17,8 @@ class Atom:
     def add(self, delta):
         return Atom(self.x+delta[0],self.y+delta[1],self.z+delta[2] )
 
+    def getPos(self):
+        return (self.x, self.y, self.z)
     def __hash__(self):
         return hash((self.x, self.y, self.z))
 

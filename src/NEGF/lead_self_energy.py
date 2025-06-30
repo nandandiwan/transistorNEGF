@@ -354,4 +354,34 @@ class LeadSelfEnergy():
         
         return self_energy
                 
+    def sancho_rubio_surface_gf(self, Energy, H00, H10, tol=1e-6): 
+        """ 
+        This iteratively calculates the surface green's function for the lead based. 
+        Although it is tested for 1D, it should be good for 2D surfaces. 
+        """
+
+        Energy = Energy
+        dagger = lambda A: np.conjugate(A.T)
         
+        I = np.eye(H00.shape[0], dtype=complex)
+ 
+        H01 = dagger(H10)
+
+        epsilon_s = H00.copy()
+        epsilon = H00.copy()
+        alpha = H01.copy()
+        beta = dagger(H10).copy()
+        err = 1.0
+
+        while err > tol:
+            inv_E = np.linalg.solve(Energy * I - epsilon, I)
+            epsilon_s_new = epsilon_s + alpha @ inv_E @ beta
+            epsilon_new = epsilon + beta @ inv_E @ alpha + alpha @ inv_E @ beta
+            alpha_new = alpha @ inv_E @ alpha
+            beta_new = beta @ inv_E @ beta
+
+            err = np.linalg.norm(alpha_new, ord='fro')
+
+            epsilon_s, epsilon, alpha, beta = epsilon_s_new, epsilon_new, alpha_new, beta_new
+
+        return  np.linalg.solve(Energy * I - epsilon_s, I)
