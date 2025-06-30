@@ -41,7 +41,7 @@ class Charge():
         self.unsmearedEFN = None
         self.unsmearedPhi = None
     
-    
+        self.weights = {}
     
     
     def calculate_real_GR(self, E):
@@ -109,9 +109,16 @@ class Charge():
         
         return np.asarray(LDOS_points.values())
     
+    def fermi(self, E, mod="False"):
+        EFN, Phi = self.unsmearedEFN, self.unsmearedPhi
+        if mod:
+            raise NotImplemented
+        else:
+            return 1 /(1 + np.exp((E*np.ones_like(EFN) - Phi - EFN) / self.device.kbT))
+    
     def compute_n_helper(self, E):
         LDOS_points = self.calculate_LDOS(E)
-        EFN, Phi = self.unsmearedEFN, self.unsmearedPhi
+        
         # all are numpy arrays
-        return EFN * Phi * LDOS_points
+        return LDOS_points * self.fermi(E)
             

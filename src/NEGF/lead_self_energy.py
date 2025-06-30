@@ -1,387 +1,301 @@
 
 
 from device import Device
-import scipy.sparse as spa 
-import scipy as sp
-from scipy import linalg
 import numpy as np
-from scipy.sparse import bmat, identity, random, csc_matrix
-from scipy.sparse.linalg import eigsh, eigs, spsolve
-
+from scipy import linalg
+import scipy.sparse as spa
 from hamiltonian import Hamiltonian
+
 class LeadSelfEnergy():
-    def __init__(self, device : Device, hamiltonian : Hamiltonian):
+    """
+    Lead self-energy calculation using surface Green's functions.
+    Based on the robust implementations from OpenMX TRAN_Calc_SurfGreen.c
+    """
+    
+    def __init__(self, device: Device, hamiltonian: Hamiltonian):
         self.ds = device
-        
         self.ham = hamiltonian
-    
-        self.E = 0.01
-        self.ky = 0
-        # for silicon 100
-        self.P = 4
-        # cache
-        self.layerHamiltonianCache = {}
-        self.layerHamiltonianCache[self.ky] = self.ham.getLayersHamiltonian(self.ky)
+        self.eta = 1e-6  # Small imaginary part for numerical stability
         
-        self.eta = 1e-6j
-    
-    def set_inputs(self, E, ky):
-        self.E = E
-        self.ky = ky
+    def _add_eta(self, E):
+        """Add small imaginary part if energy is real for numerical stability"""
+        if np.imag(E) == 0:
+            return E + 1j * self.eta
+        return E
         
-    @staticmethod
-    def GzerozeroH_W_sparse(wmH: spa.spmatrix, t: spa.spmatrix) -> np.ndarray:
+    def surface_greens_function(self, E, H00, H01, method="sancho_rubio", 
+                               iteration_max=1000, tolerance=1e-6):
         """
-        Surface Green's function calculation optimized for sparse matrices.
+        Calculate surface Green's function using specified method.
+        
+        Args:
+            E: Energy (complex)
+            H00: On-site Hamiltonian matrix
+            H01: Hopping matrix (coupling to next layer)
+            method: "sancho_rubio", "iterative", or "transfer"
+            iteration_max: Maximum iterations
+            tolerance: Convergence tolerance
+            
+        Returns:
+            Surface Green's function matrix
         """
-        N = wmH.shape[0]
+        E = self._add_eta(E)
         
-
-        wmH_dense = wmH.toarray()
-        t_dense = t.toarray()
-
-        A = np.zeros((2*N, 2*N), dtype=complex)
-        B = np.zeros((2*N, 2*N), dtype=complex)
+        if method == "sancho_rubio":
+            return self._sancho_rubio_surface_gf(E, H00, H01, tolerance, iteration_max)
+        elif method == "iterative":
+            return self._iterative_surface_gf(E, H00, H01, tolerance, iteration_max)
+        elif method == "transfer":
+            return self._transfer_surface_gf(E, H00, H01, tolerance, iteration_max)
+        else:
+            raise ValueError(f"Unknown method: {method}")
+    
+    def _sancho_rubio_surface_gf(self, E, H00, H01, tolerance=1e-6, iteration_max=1000):
+        """
+        Standard Sancho-Rubio algorithm for surface Green's function.
+        Based on TRAN_Calc_SurfGreen_Normal from OpenMX.
+        """
+        n = H00.shape[0]
+        I = np.eye(n, dtype=complex)
         
-        A[:N, N:2*N] = np.eye(N)
-        A[N:2*N, :N] = -t_dense.conj().T
-        A[N:2*N, N:2*N] = wmH_dense
+        # Convert to dense arrays for stability
+        if hasattr(H00, 'toarray'):
+            H00 = H00.toarray()
+        if hasattr(H01, 'toarray'):
+            H01 = H01.toarray()
+            
+        H10 = H01.conj().T
         
-        B[:N, :N] = np.eye(N)
-        B[N:2*N, N:2*N] = t_dense
+        # Initialize
+        es0 = E * I - H00  # Surface term
+        e00 = E * I - H00  # Bulk term
+        alp = H01.copy()   # Forward coupling
+        bet = H10.copy()   # Backward coupling
         
-
+        # Initial surface Green's function
         try:
-            eigenvalues, eigenvectors = linalg.eig(A, B)
+            gr = linalg.solve(es0, I)
         except linalg.LinAlgError:
-            print("Warning: Using pseudo-inverse for eigenvalue problem")
-            B_pinv = linalg.pinv(B)
-            eigenvalues, eigenvectors = linalg.eig(B_pinv @ A)
+            gr = linalg.pinv(es0)
         
-
-        magnitudes = np.abs(eigenvalues)
-
-        valid_mask = np.isfinite(magnitudes) & (magnitudes > 1e-12)
-        valid_eigenvalues = eigenvalues[valid_mask]
-        valid_eigenvectors = eigenvectors[:, valid_mask]
-        valid_magnitudes = magnitudes[valid_mask]
+        gr_old = gr.copy()
         
-        if len(valid_eigenvalues) == 0:
-            raise ValueError("No valid eigenvalues found")
-        
-
-        real_parts = np.real(valid_eigenvalues)
-        sorted_indices = np.lexsort((valid_magnitudes, real_parts))
-        
-    
-        sorted_eigenvectors = valid_eigenvectors[:, sorted_indices]
-        
-        Z11 = sorted_eigenvectors[:N, :N]
-        Z21 = sorted_eigenvectors[N:2*N, :N]
-        
-
-        Z11_inv = linalg.pinv(Z11, rtol=1e-12)
-        Gzeta = Z21 @ Z11_inv
-
-        
-        return Gzeta
-    
-    def self_energy(self, side, E, ky) -> np.ndarray:
-        """
-        Corrected self-energy calculation.
-        """
-        ham = self.ham
-        H00, H01, H10 = ham.get_H00_H01_H10(ky, side=side, sparse=True)
-        
-        N = H00.shape[0]
-        eta = 1e-6
-            
-        if side == "left":
-            wmH = (E - self.ds.Vs) * spa.eye(N, dtype=complex) - H00 + 1j * eta * spa.eye(N, dtype=complex)
-            Gzeta = LeadSelfEnergy.GzerozeroH_W_sparse(wmH, H10)
-
-            selfenergy = H10.toarray() @ Gzeta @ H10.conj().T.toarray()
-            return selfenergy[:ham.Nz * 10,:ham.Nz * 10]
-        else:
-            wmH = (E - self.ds.Vd) * spa.eye(N, dtype=complex) - H00 + 1j * eta * spa.eye(N, dtype=complex)
-            Gzeta = LeadSelfEnergy.GzerozeroH_W_sparse(wmH, H01)
-            selfenergy = H01.toarray() @ Gzeta @ H01.conj().T.toarray()
-            return selfenergy[-ham.Nz * 10:,-ham.Nz * 10:]
-        
-    
-    def iterative_self_energy(self, E, ky, side = "left"):
-        """
-        Implements Algorithm I (Iterative method) from the paper:
-        "Methods for fast evaluation of self-energy matrices in tight-binding modeling"
-        
-        doesn't work i think
-        """
-        dagger = lambda A: np.conjugate(A.T)
-        self.set_inputs(E, ky)
-        XIs, XI, PI, h12 = self.decomposition_algorithm(side)
-        
-        # Convert h12 to array if it's sparse
-        if hasattr(h12, 'toarray'):
-            h12 = h12.toarray()
-        
-        # Set up matrices for iteration - use the energy with small imaginary part
-        E_complex = self.E + self.eta
-        I = np.eye(XI.shape[0], dtype=complex)
-        
-        A = E_complex * I - XI
-        As = E_complex * I - XIs
-        delta = 1e-5
-        
-        PI_dagger = PI.conj().T
-
-        iteration_count = 0
-        max_iterations = 100  
-        
-        while (np.max(np.abs(PI)) > delta or np.max(np.abs(PI_dagger)) > delta) and iteration_count < max_iterations:
+        for iteration in range(1, iteration_max):
             try:
-                X_PI = np.linalg.solve(A, PI)
-                X_PI_dagger = np.linalg.solve(A, PI_dagger)
-                
-            except np.linalg.LinAlgError:
-                print(f"Error: Matrix A is singular at iteration {iteration_count}. Iteration cannot continue.")
-                return np.full_like(A, np.nan)
+                # Invert (E*I - e00)
+                inv_e00 = linalg.solve(e00, I)
+            except linalg.LinAlgError:
+                inv_e00 = linalg.pinv(e00)
             
-            A = A - PI @ X_PI_dagger - PI_dagger @ X_PI
-            As = As - PI @ X_PI_dagger
-            PI = PI @ X_PI
-            PI_dagger = PI_dagger @ X_PI_dagger
-            iteration_count += 1
-
-        if iteration_count >= max_iterations:
-            print(f"Warning: Iteration did not converge after {max_iterations} steps")
+            # Update surface term
+            temp1 = inv_e00 @ bet
+            temp2 = alp @ temp1
+            es0 = es0 - temp2
+            
+            # Update bulk term  
+            temp3 = inv_e00 @ alp
+            temp4 = bet @ temp3
+            temp5 = alp @ temp1
+            e00 = e00 - temp4 - temp5
+            
+            # Update coupling terms
+            alp = alp @ temp3
+            bet = bet @ temp1
+            
+            # Calculate new surface Green's function
+            try:
+                gr = linalg.solve(es0, I)
+            except linalg.LinAlgError:
+                gr = linalg.pinv(es0)
+            
+            # Check convergence
+            diff = gr - gr_old
+            rms = np.sqrt(np.max(np.abs(diff)**2))
+            
+            if rms < tolerance:
+                break
+                
+            gr_old = gr.copy()
+        
+        if iteration >= iteration_max - 1:
+            print(f"Warning: Surface GF did not converge after {iteration_max} iterations, rms={rms}")
+            
+        return gr
     
-        h12_dagger = h12.conj().T
-        
-        try:
-            Y = np.linalg.solve(As, h12_dagger)
-        except np.linalg.LinAlgError:
-            print("Error: Matrix As is singular for the final solve step.")
-            return np.full_like(As, np.nan)
-
-        Sigma = h12 @ Y
-
-        return Sigma
-    
-    def get_layer_hamiltonian(self, p, side="left") -> tuple:
-        if not self.ky in self.layerHamiltonianCache:
-            self.layerHamiltonianCache[self.ky] = self.ham.getLayersHamiltonian(self.ky)
-        layerHamiltonians = self.layerHamiltonianCache[self.ky]
-        
-        if p > self.P or p < 1:
-            print(f"Error: p={p}, self.P={self.P}")
-            raise ValueError("layers are indexed 1,2,...self.P")
-   
-        if side == "left":
-            layer_index = 3 - (p - 1) 
-        elif side == "right":
-            layer_index = (self.ham.layer_right_lead + p - 1) % 4
-        else:
-            raise ValueError("side must be 'left' or 'right'") 
-        if layer_index not in layerHamiltonians:
-            raise ValueError(f"Layer index {layer_index} not found in layer Hamiltonians")
-            
-        H_pp, H_p_p1 = layerHamiltonians[layer_index]
-
-        if hasattr(H_pp, 'tocsc'):
-            H_pp = H_pp.tocsc()
-        if H_p_p1 is not None and hasattr(H_p_p1, 'tocsc'):
-            H_p_p1 = H_p_p1.tocsc()
-            
-        return H_pp, H_p_p1   
-        
-    
-    def decomposition_algorithm(self, side="left"):
-        """broken"""
-        dagger = lambda A: np.conjugate(A.T)
-
-        H_tilde_matrices = [None] * self.P  
-        H_cross_matrices = [None] * self.P  
-        
-
-        h_PP, h_P_P1 = self.get_layer_hamiltonian(self.P, side)
-
-        if hasattr(h_PP, 'toarray'):
-            h_PP_dense = h_PP.toarray()
-        else:
-            h_PP_dense = h_PP
-            
-        E_matrix = self.E * np.eye(h_PP_dense.shape[0], dtype=complex)
-        H_tilde_PP = np.linalg.inv(E_matrix - h_PP_dense)
-        H_tilde_matrices[self.P - 1] = H_tilde_PP
-        H_cross_matrices[self.P - 1] = H_tilde_PP
-   
-        for p in range(self.P - 1, 1, -1):
-            h_pp, h_p_p1 = self.get_layer_hamiltonian(p, side)
-            
-            if h_p_p1 is None:
-                raise ValueError(f"Missing coupling H_{p},{p+1} for layer {p}")
-
-            if hasattr(h_pp, 'toarray'):
-                h_pp_dense = h_pp.toarray()
-            else:
-                h_pp_dense = h_pp
-                
-            if hasattr(h_p_p1, 'toarray'):
-                h_p_p1_dense = h_p_p1.toarray()
-            else:
-                h_p_p1_dense = h_p_p1
-
-            E_matrix_p = self.E * np.eye(h_pp_dense.shape[0], dtype=complex)
-            coupling_term = h_p_p1_dense @ H_tilde_matrices[p] @ dagger(h_p_p1_dense)
-            H_tilde_pp = np.linalg.inv(E_matrix_p - h_pp_dense - coupling_term)
-            H_tilde_matrices[p - 1] = H_tilde_pp
-
-            H_cross_pp = H_tilde_matrices[p - 1] @ h_p_p1_dense @ H_cross_matrices[p]
-            H_cross_matrices[p - 1] = H_cross_pp
-
-        C_tilde_22 = H_tilde_matrices[1]  
-        C_tilde_2P = H_cross_matrices[1]  
-
-        C_tilde_matrices = [None] * (self.P + 1)
-        C_tilde_matrices[2] = C_tilde_22
-
-        for p in range(3, self.P + 1):
-            _, h_p_minus_1_p = self.get_layer_hamiltonian(p - 1, side)
-            
-            if h_p_minus_1_p is None:
-                raise ValueError(f"Missing coupling H_{p-1},{p} for layer {p-1}")
-        
-            if hasattr(h_p_minus_1_p, 'toarray'):
-                h_p_minus_1_p_dense = h_p_minus_1_p.toarray()
-            else:
-                h_p_minus_1_p_dense = h_p_minus_1_p
-                
-            h_p_p_minus_1 = dagger(h_p_minus_1_p_dense)
-            
-            H_tilde_pp = H_tilde_matrices[p - 1]
-            C_tilde_prev = C_tilde_matrices[p - 1]
-            
-            inner_term = h_p_p_minus_1 @ C_tilde_prev @ dagger(h_p_p_minus_1)
-            C_tilde_matrices[p] = H_tilde_pp + H_tilde_pp @ inner_term @ H_tilde_pp
-        
-        h11, h12 = self.get_layer_hamiltonian(1, side)
-        if h12 is None:
-            raise ValueError("Missing coupling H_1,2")
-        
-        if hasattr(h11, 'toarray'):
-            h11_dense = h11.toarray()
-        else:
-            h11_dense = h11
-            
-        if hasattr(h12, 'toarray'):
-            h12_dense = h12.toarray()
-        else:
-            h12_dense = h12
-            
-        XI_s = h11_dense + h12_dense @ C_tilde_matrices[2] @ dagger(h12_dense)
-        
-        _, h_P_P1 = self.get_layer_hamiltonian(self.P, side)
-        if h_P_P1 is None:
-
-            XI = XI_s
-        else:
-            if hasattr(h_P_P1, 'toarray'):
-                h_P_P1_dense = h_P_P1.toarray()
-            else:
-                h_P_P1_dense = h_P_P1
-                
-            C_tilde_PP = C_tilde_matrices[self.P]
-            XI = XI_s + dagger(h_P_P1_dense) @ C_tilde_PP @ h_P_P1_dense
-        
-        if h_P_P1 is None:
-            PI = np.zeros((h12_dense.shape[0], h12_dense.shape[1]), dtype=complex)
-        else:
-            PI = h12_dense @ C_tilde_2P @ h_P_P1_dense
-        
-        return XI_s, XI, PI, h12_dense
-
-    def construct_U_plus_and_Lambda_plus(eigenvalues, eigenvectors, n_dim, epsilon=0.1):
-        """broken"""
-        abs_vals = np.abs(eigenvalues)
-        
-        is_propagating = np.isclose(abs_vals, 1.0)
-        is_evanescent = (abs_vals < 1.0) & (abs_vals > epsilon)
-        
-        selected_indices = np.where(is_propagating | is_evanescent)[0]
-        
-        if len(selected_indices) == 0:
-            return np.array([], dtype=complex), np.array([],dtype=complex)
-            
-        filtered_eigenvalues = eigenvalues[selected_indices]
-        filtered_eigenvectors = eigenvectors[:, selected_indices]
-
-        Lambda_plus = np.diag(filtered_eigenvalues)
-        U_plus = filtered_eigenvectors[:n_dim, :]
-
-        return U_plus, Lambda_plus
-    
-    def mod_eigen_self_energy(self, E, ky, side = "left"):
-        """broken"""
-        dagger = lambda A: np.conjugate(A.T)
-        self.set_inputs(E, ky)
-        XIs, XI, PI, h12 = self.decomposition_algorithm(side)
-        XIs = spa.csc_matrix(XIs)
-        XI = spa.csc_matrix(XI)
-        PI = spa.csc_matrix(PI)
-        I = np.eye(XI.shape[0], dtype=XI)
-        Z = I * 0
-        D = E * I - XI
-        T = -PI
-        A = bmat([
-            [Z, I],
-            [-T.conj().T, -D]
-        ], format='csc')
-
-        B = bmat([
-            [I, Z],
-            [Z, T]
-        ], format='csc')
-
-        eigenvalues, eigenvectors = eigs(A, M=B, sigma=1.0, which='LM')
-
-        U_plus, Lambda = LeadSelfEnergy.construct_U_plus_and_Lambda_plus(eigenvalues, eigenvectors, T.shape[0], epsilon=0.1)
-        print(U_plus.shape)
-        U_pseudo = np.linalg.pinv(U_plus)
-        F = U_plus @ Lambda @ U_pseudo
-
-        Y = np.linalg.solve(E * I - XIs.toarray() - PI.toarray() @ F, dagger(h12.toarray()))
-        self_energy = h12 @ Y
-        
-        return self_energy
-                
-    def sancho_rubio_surface_gf(self, Energy, H00, H10, tol=1e-6): 
-        """ 
-        This iteratively calculates the surface green's function for the lead based. 
-        Although it is tested for 1D, it should be good for 2D surfaces. 
+    def _iterative_surface_gf(self, E, H00, H01, tolerance=1e-6, iteration_max=1000):
         """
-
-        Energy = Energy
-        dagger = lambda A: np.conjugate(A.T)
+        Alternative iterative method for surface Green's function.
+        Based on TRAN_Calc_SurfGreen_Multiple_Inverse from OpenMX.
+        """
+        n = H00.shape[0]
+        I = np.eye(n, dtype=complex)
         
-        I = np.eye(H00.shape[0], dtype=complex)
- 
-        H01 = dagger(H10)
-
-        epsilon_s = H00.copy()
-        epsilon = H00.copy()
-        alpha = H01.copy()
-        beta = dagger(H10).copy()
-        err = 1.0
-
-        while err > tol:
-            inv_E = np.linalg.solve(Energy * I - epsilon, I)
-            epsilon_s_new = epsilon_s + alpha @ inv_E @ beta
-            epsilon_new = epsilon + beta @ inv_E @ alpha + alpha @ inv_E @ beta
-            alpha_new = alpha @ inv_E @ alpha
-            beta_new = beta @ inv_E @ beta
-
-            err = np.linalg.norm(alpha_new, ord='fro')
-
-            epsilon_s, epsilon, alpha, beta = epsilon_s_new, epsilon_new, alpha_new, beta_new
-
-        return  np.linalg.solve(Energy * I - epsilon_s, I)
+        # Convert to dense arrays
+        if hasattr(H00, 'toarray'):
+            H00 = H00.toarray()
+        if hasattr(H01, 'toarray'):
+            H01 = H01.toarray()
+        
+        # h0 = E*I - H00
+        h0 = E * I - H00
+        
+        # hl = H01, hr = H01^dagger
+        hl = H01.copy()
+        hr = H01.conj().T
+        
+        # Initial Green's function
+        try:
+            g0 = linalg.solve(h0, I)
+        except linalg.LinAlgError:
+            g0 = linalg.pinv(h0)
+        
+        for iteration in range(1, iteration_max):
+            # Calculate hl*g0*hr
+            temp1 = hl @ g0
+            temp2 = temp1 @ hr
+            
+            # New denominator: h0 - hl*g0*hr
+            h_new = h0 - temp2
+            
+            try:
+                g_new = linalg.solve(h_new, I)
+            except linalg.LinAlgError:
+                g_new = linalg.pinv(h_new)
+            
+            # Check convergence
+            diff = g_new - g0
+            rms = np.sqrt(np.max(np.abs(diff)**2))
+            
+            if rms < tolerance:
+                break
+                
+            g0 = g_new.copy()
+        
+        if iteration >= iteration_max - 1:
+            print(f"Warning: Iterative Surface GF did not converge after {iteration_max} iterations")
+            
+        return g0
+    
+    def _transfer_surface_gf(self, E, H00, H01, tolerance=1e-6, iteration_max=1000):
+        """
+        Transfer matrix method for surface Green's function.
+        Based on TRAN_Calc_SurfGreen_transfer from OpenMX.
+        """
+        n = H00.shape[0]
+        I = np.eye(n, dtype=complex)
+        
+        # Convert to dense arrays
+        if hasattr(H00, 'toarray'):
+            H00 = H00.toarray()
+        if hasattr(H01, 'toarray'):
+            H01 = H01.toarray()
+        
+        H10 = H01.conj().T
+        
+        # Initial inverse: (E*I - H00)^-1
+        try:
+            gr00_inv = linalg.solve(E * I - H00, I)
+        except linalg.LinAlgError:
+            gr00_inv = linalg.pinv(E * I - H00)
+        
+        # Initial transfer matrices
+        t_i = gr00_inv @ H10
+        bar_t_i = gr00_inv @ H01
+        
+        T_i = t_i.copy()
+        bar_T_i = bar_t_i.copy()
+        
+        T_i_old = T_i.copy()
+        
+        for iteration in range(1, iteration_max):
+            # Calculate (I - t*bar_t - bar_t*t)^-1
+            temp1 = t_i @ bar_t_i
+            temp2 = bar_t_i @ t_i
+            denominator = I - temp1 - temp2
+            
+            try:
+                inv_denom = linalg.solve(denominator, I)
+            except linalg.LinAlgError:
+                inv_denom = linalg.pinv(denominator)
+            
+            # Update transfer matrices
+            t_i_new = inv_denom @ (t_i @ t_i)
+            bar_t_i_new = inv_denom @ (bar_t_i @ bar_t_i)
+            
+            # Update accumulated transfer matrices
+            bar_T_i_new = bar_T_i @ bar_t_i_new
+            T_i_new = T_i + bar_T_i @ t_i_new
+            
+            # Check convergence
+            diff = T_i_new - T_i_old
+            rms = np.sqrt(np.max(np.abs(diff)**2))
+            
+            if rms < tolerance:
+                break
+            
+            # Update for next iteration
+            t_i = t_i_new
+            bar_t_i = bar_t_i_new
+            T_i_old = T_i.copy()
+            T_i = T_i_new
+            bar_T_i = bar_T_i_new
+        
+        if iteration >= iteration_max - 1:
+            print(f"Warning: Transfer Surface GF did not converge after {iteration_max} iterations")
+        
+        # Final surface Green's function
+        final_matrix = E * I - H00 - H01 @ T_i
+        try:
+            return linalg.solve(final_matrix, I)
+        except linalg.LinAlgError:
+            return linalg.pinv(final_matrix)
+    
+    def self_energy(self, side, E, ky, method="sancho_rubio"):
+        """
+        Calculate lead self-energy using surface Green's functions.
+        
+        Args:
+            side: "left" or "right" lead
+            E: Energy
+            ky: Transverse momentum
+            method: Surface GF method ("sancho_rubio", "iterative", "transfer")
+            
+        Returns:
+            Self-energy matrix
+        """
+        # Get lead Hamiltonian matrices
+        H00, H01, H10 = self.ham.get_H00_H01_H10(ky, side=side, sparse=False)
+        
+        # Handle large energies
+        if np.abs(E) > 5e5:
+            return np.zeros((H00.shape[0], H00.shape[0]), dtype=complex)
+        
+        # Apply bias voltage
+        if side == "left":
+            E_lead = E - self.ds.Vs
+        else:  # right
+            E_lead = E - self.ds.Vd
+        
+        # Calculate surface Green's function
+        try:
+            G_surface = self.surface_greens_function(E_lead, H00, H01, method=method)
+        except Exception as e:
+            print(f"Warning: Surface GF calculation failed for {side} lead: {e}")
+            # Fallback to simple approximation
+            n = H00.shape[0]
+            eta = 1e-3  # Larger eta for stability
+            G_surface = linalg.pinv(self._add_eta(E_lead) * np.eye(n) - H00)
+        
+        # Calculate self-energy
+        if side == "left":
+            # Self-energy: Σ_L = H10 @ G_surface @ H01
+            self_energy = H10 @ G_surface @ H01
+            # Extract the block that couples to the device
+            device_size = 2 * self.ham.Nz * 10  # Assuming 10 orbitals per layer
+            return self_energy[:device_size, :device_size]
+        else:  # right
+            # Self-energy: Σ_R = H01 @ G_surface @ H10  
+            self_energy = H01 @ G_surface @ H10
+            # Extract the block that couples to the device
+            device_size = 2 * self.ham.Nz * 10
+            return self_energy[-device_size:, -device_size:]
