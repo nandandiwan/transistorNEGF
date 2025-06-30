@@ -2,3 +2,4 @@ testing/
 *.html
 *.json
 MosfetSim_v4.ipynb
+RGF_testing/RGF/superlu_mt-4.0.0/
