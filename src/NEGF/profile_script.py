@@ -15,10 +15,10 @@ from collections import defaultdict
 from itertools import product
 import time
 from device import Device
-from rgf import GreensFunction
+from NEGF_sim_git.src.archive.rgf import GreensFunction
 from hamiltonian import Hamiltonian
 from device import Device
-from rgf import GreensFunction
+from NEGF_sim_git.src.archive.rgf import GreensFunction
 import scipy as sp
 from hamiltonian import Hamiltonian
 from helper import Helper_functions

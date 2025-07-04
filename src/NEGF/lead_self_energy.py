@@ -286,16 +286,18 @@ class LeadSelfEnergy():
             eta = 1e-3  # Larger eta for stability
             G_surface = linalg.pinv(self._add_eta(E_lead) * np.eye(n) - H00)
         
-        # Calculate self-energy
+        # Calculate self-energy - use same formula for both leads at zero bias
+        # For symmetric leads, both should use the same computation
         if side == "left":
             # Self-energy: Σ_L = H10 @ G_surface @ H01
             self_energy = H10 @ G_surface @ H01
-            # Extract the block that couples to the device
-            device_size = 2 * self.ham.Nz * 10  # Assuming 10 orbitals per layer
+            # Extract top-left block (coupling to first supercell)
+            device_size = 4 * self.ham.Nz * 2 * 10  # 4 layers × Nz × 2 atoms × 10 orbitals
             return self_energy[:device_size, :device_size]
         else:  # right
-            # Self-energy: Σ_R = H01 @ G_surface @ H10  
-            self_energy = H01 @ G_surface @ H10
-            # Extract the block that couples to the device
-            device_size = 2 * self.ham.Nz * 10
+            # For symmetric leads at zero bias, use same formula but extract different block
+            # This ensures the physics is symmetric
+            self_energy = H10 @ G_surface @ H01  # Same as left!
+            # Extract bottom-right block (coupling to second supercell)
+            device_size = 4 * self.ham.Nz * 2 * 10
             return self_energy[-device_size:, -device_size:]

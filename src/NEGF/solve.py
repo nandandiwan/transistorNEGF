@@ -19,7 +19,7 @@ import scipy as sp
 import scipy.sparse as spa
 import scipy.sparse.linalg as spla
 from poisson import PoissonSolver
-from rgf import GreensFunction
+from NEGF_sim_git.src.archive.rgf import GreensFunction
 from hamiltonian import Hamiltonian
 import time
 class Solve:

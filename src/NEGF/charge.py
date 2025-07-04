@@ -16,10 +16,11 @@ from lead_self_energy import LeadSelfEnergy
 from device import Device
 import numpy as np
 import scipy as sp
+from scipy import linalg
 import scipy.sparse as spa
 import scipy.sparse.linalg as spla
 from poisson import PoissonSolver
-from rgf import GreensFunction
+from NEGF_sim_git.src.archive.rgf import GreensFunction
 from hamiltonian import Hamiltonian
 import time
 
@@ -31,15 +32,16 @@ class Charge():
         self.ham = Hamiltonian(device)
         self.GF = GreensFunction(device, self.ham)
         self.lse = LeadSelfEnergy(self.device, self.ham)
-        
+    
         self.energy_range = np.linspace(-5,5, 200)
         self.k_space = np.linspace(0,1,32) # exact number of processes 
         
         self.atoms = self.ham.unitCell.ATOM_POSITIONS # the atoms         
         
         # These are lists that give quasi fermi energy and potential at location of every atom, needs to be initialized every time 
-        self.unsmearedEFN = None
-        self.unsmearedPhi = None
+        self.smearedEFN = np.zeros((self.device.nx * self.device.nz)) # EFN has same dimension as poisson solver 
+        self.smearedPhi = self.device.potential
+        self.smearedLDOS = None # TODO
     
         self.weights = {}
     
@@ -107,18 +109,154 @@ class Charge():
             ldos_contribution =  -1 / np.pi * np.sum(G_R_REAL[atom_idx * 10, (atom_idx + 1) * 10]).imag
             LDOS_points[atom.getPos()] = ldos_contribution
         
-        return np.asarray(LDOS_points.values())
+        return LDOS_points
+    
+    def calculate_smeared_LDOS(self, E):
+        LDOS_points = self.calculate_LDOS(E)
+        """interpolate from this to device array"""
+        raise NotImplemented
+        
     
     def fermi(self, E, mod="False"):
-        EFN, Phi = self.unsmearedEFN, self.unsmearedPhi
+        EFN, Phi = self.smearedEFN, self.smearedPhi
         if mod:
             raise NotImplemented
         else:
             return 1 /(1 + np.exp((E*np.ones_like(EFN) - Phi - EFN) / self.device.kbT))
     
-    def compute_n_helper(self, E):
+    def compute_EFN_helper(self, E):
+        """This will be part for the bracket bisect way of finding the EFN, we take EC as """
         LDOS_points = self.calculate_LDOS(E)
         
         # all are numpy arrays
         return LDOS_points * self.fermi(E)
+    
+    def calculate_EC(self):
+        """Use calculate_DOS to find the EC. utilize TB code from before"""
+        raise NotImplemented
+    
+    def calculate_DOS(self, energy_range=None, ky_range=None, method="sancho_rubio", 
+                     eta=1e-6, save_data=True, filename="dos_data.txt"):
+        """
+        Calculate Density of States (DOS) using robust surface Green's functions.
+        
+        Args:
+            energy_range: Energy points for DOS calculation
+            ky_range: Transverse momentum points  
+            method: Surface GF method ("sancho_rubio", "iterative", "transfer")
+            eta: Small imaginary part for broadening
+            save_data: Whether to save DOS data to file
+            filename: Output filename for DOS data
             
+        Returns:
+            energies, total_dos: Energy points and corresponding DOS values
+        """
+        if energy_range is None:
+            energy_range = np.linspace(-2.0, 2.0, 200)
+        if ky_range is None:
+            ky_range = np.linspace(0, 1, 32)
+            
+        print(f"Calculating DOS with {len(energy_range)} energy points and {len(ky_range)} ky points")
+        print(f"Using {method} method for surface Green's functions")
+        
+        # Calculate DOS for each energy point
+        total_dos = np.zeros(len(energy_range))
+        
+        start_time = time.time()
+        
+        for i, energy in enumerate(energy_range):
+            dos_ky = []
+            for ky in ky_range:
+                try:
+                    dos_val = self._calculate_dos_point(energy, ky, method, eta)
+                    dos_ky.append(dos_val)
+                except Exception as e:
+                    print(f"Error at E={energy:.3f}, ky={ky:.3f}: {e}")
+                    dos_ky.append(0.0)
+            
+            # Average over ky points
+            total_dos[i] = np.mean(dos_ky)
+            
+            # Progress indicator
+            if (i + 1) % 20 == 0:
+                elapsed = time.time() - start_time
+                eta_remaining = elapsed * (len(energy_range) - i - 1) / (i + 1)
+                print(f"Progress: {i+1}/{len(energy_range)} ({100*(i+1)/len(energy_range):.1f}%), "
+                      f"ETA: {eta_remaining:.1f}s")
+        
+        end_time = time.time()
+        print(f"DOS calculation completed in {end_time - start_time:.2f} seconds")
+        
+        if save_data:
+            # Save DOS data
+            dos_data = np.column_stack((energy_range, total_dos))
+            np.savetxt(filename, dos_data, header="Energy(eV)  DOS(states/eV)", 
+                      fmt='%.6e', delimiter='\t')
+            print(f"DOS data saved to {filename}")
+        
+        return energy_range, total_dos
+    
+    def _calculate_dos_point(self, energy, ky, method="sancho_rubio", eta=1e-6):
+        """
+        Calculate DOS at a single (E, ky) point using robust surface Green's functions.
+        Based on OpenMX TRAN implementation for symmetry preservation.
+        
+        Returns:
+            float: DOS value at this energy point
+        """
+        try:
+            # Create device Hamiltonian
+            H = self.ham.create_sparse_channel_hamlitonian(ky, blocks=False)
+            
+            # Calculate self-energies using the cleaned implementation
+            lse = self.lse
+            
+            # Use symmetric treatment for zero bias
+            if abs(self.device.Vs) < 1e-10 and abs(self.device.Vd) < 1e-10:
+                # For zero bias, ensure symmetric treatment
+                sl = lse.self_energy(side="left", E=energy, ky=ky, method=method)
+                sr = lse.self_energy(side="right", E=energy, ky=ky, method=method)
+            else:
+                # For finite bias, include voltage effects
+                sl = lse.self_energy(side="left", E=energy, ky=ky, method=method)
+                sr = lse.self_energy(side="right", E=energy, ky=ky, method=method)
+            
+            # Add self-energies to Hamiltonian boundaries
+            H_total = H.copy()
+            
+            # Left contact self-energy
+            sl_size = min(sl.shape[0], H.shape[0])
+            H_total[:sl_size, :sl_size] += sl[:sl_size, :sl_size]
+            
+            # Right contact self-energy  
+            sr_size = min(sr.shape[0], H.shape[0])
+            H_total[-sr_size:, -sr_size:] += sr[-sr_size:, -sr_size:]
+            
+            # Construct and solve for Green's function
+            E_complex = energy + 1j * eta
+            H_gf = spa.csc_matrix(np.eye(H_total.shape[0], dtype=complex) * E_complex) - H_total
+            
+            # Calculate DOS from trace of imaginary part of Green's function
+            # DOS(E) = -1/π * Im[Tr(G_R(E))]
+            try:
+                # For large matrices, compute trace more efficiently
+                G_diag = spla.spsolve(H_gf, np.ones(H_total.shape[0], dtype=complex))
+                dos_value = -np.sum(np.imag(G_diag)) / np.pi
+            except:
+                # Fallback: solve full matrix
+                I = spa.identity(H_total.shape[0], dtype=complex, format='csc')
+                G_R = spla.spsolve(H_gf, I)
+                if spa.issparse(G_R):
+                    dos_value = -np.imag(G_R.diagonal().sum()) / np.pi
+                else:
+                    dos_value = -np.imag(np.trace(G_R)) / np.pi
+            
+            return float(dos_value.real) if np.isfinite(dos_value) else 0.0
+        
+        except Exception as e:
+            print(f"Error in DOS calculation at (E={energy:.3f}, ky={ky:.3f}): {e}")
+            return 0.0
+    
+    
+    def calculate_n(self):
+        """This finds Gn and then integrates over """

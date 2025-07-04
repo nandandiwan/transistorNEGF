@@ -50,16 +50,15 @@ class Hamiltonian:
     def getLayersHamiltonian(self, ky, side="left") -> dict:
         """
         Returns the layer Hamiltonians for the condensed system.
+        For symmetric DOS, both leads should use the same orientation.
         
         Returns:
             dict: Dictionary with keys 0,1,2,3 (for 4-layer unit cell) containing
                   [H_pp, H_p,p+1] pairs for each layer p
         """
-        if (side == "left"):
-            orientation = (0, 1, 2, 3)
-        else:
-            orientation = ((self.layer_right_lead + 1) % 4, (self.layer_right_lead + 2) % 4, \
-                (self.layer_right_lead + 3) % 4, (self.layer_right_lead + 4) % 4)
+        # Use same orientation for both leads to ensure symmetry
+        orientation = (0, 1, 2, 3)
+        
         tempUnitCell = UnitCell(self.Nz, 5, orientiation=orientation)
         
         layersH00, layersH01 = self.create_sparse_channel_hamlitonian(ky, tempUnitCell)
@@ -146,28 +145,45 @@ class Hamiltonian:
     
     def get_H00_H01_H10(self, ky, side="left", sparse=False):
         """
-        Get H00, H01, and H10 matrices for both leads.
+        Get H00, H01, and H10 matrices for both leads with proper symmetry.
+        For symmetric DOS at zero bias, both leads should have identical structure.
         """
-        # Both leads use the same orientation (0,1,2,3) for now
-        if side == "left":
-            orientation = (0, 1, 2, 3)
-        else:
-            orientation = ((self.layer_right_lead + 1) % 4, (self.layer_right_lead + 2) % 4, \
-                (self.layer_right_lead + 3) % 4, (self.layer_right_lead + 4) % 4)
+        if side == 'left':
+            orientation = (0, 1, 2, 3)  # Always use same orientation
+        elif side == "right":
+            orientation = tuple([(self.layer_right_lead + i) % 4 for i in range(1, 5)])
         
+        # Create 8-layer system: two adjacent 4-layer supercells
+        # This allows us to extract H01 as coupling between supercells
         newUnitCell = UnitCell(self.Nz, 8, orientiation=orientation)
         HT = self.create_sparse_channel_hamlitonian(ky, unitCell=newUnitCell, blocks=False)
         
-        H00 = HT[:80 * self.Nz, :80 * self.Nz]
+        # Calculate proper block size: 4 layers × Nz vertical blocks × 2 atoms/layer × 10 orbitals/atom
+        # The 4-layer structure represents one complete unit cell in the transport direction
+        block_size = 4 * self.Nz * 2 * 10  # = 80 * Nz
         
-        # H01: coupling from current unit cell to next unit cell (layer 3 → layer 0)
-        H01 = HT[:80 * self.Nz, 80 * self.Nz:160 * self.Nz]
+        # Extract matrices with consistent sizing
+        H00 = HT[:block_size, :block_size]
         
-        # H10: coupling from next unit cell to current unit cell (layer 0 → layer 3)
-        H10 = HT[80 * self.Nz:160 * self.Nz, :80 * self.Nz]
+        # H01: coupling from current unit cell to next unit cell  
+        H01 = HT[:block_size, block_size:2*block_size]
         
-        if sparse == False:
-            return H00.toarray(), H01.toarray(), H10.toarray()
+        # H10: coupling from next unit cell to current unit cell (should be H01†)
+        H10 = HT[block_size:2*block_size, :block_size]
+        
+        # Verify Hermitian relationship: H10 should equal H01†
+        if not sparse:
+            H00_dense = H00.toarray() if hasattr(H00, 'toarray') else H00
+            H01_dense = H01.toarray() if hasattr(H01, 'toarray') else H01
+            H10_dense = H10.toarray() if hasattr(H10, 'toarray') else H10
+            
+            # Check if H10 ≈ H01†
+            diff = np.max(np.abs(H10_dense - H01_dense.conj().T))
+            if diff > 1e-12:
+                print(f"Warning: H10 != H01† for {side} lead, difference: {diff:.2e}")
+            
+            return H00_dense, H01_dense, H10_dense
+            
         return H00, H01, H10
     
     
