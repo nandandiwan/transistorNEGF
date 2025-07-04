@@ -20,7 +20,7 @@ from scipy import linalg
 import scipy.sparse as spa
 import scipy.sparse.linalg as spla
 from poisson import PoissonSolver
-from NEGF_sim_git.src.archive.rgf import GreensFunction
+from rgf import GreensFunction
 from hamiltonian import Hamiltonian
 import time
 
@@ -44,7 +44,41 @@ class Charge():
         self.smearedLDOS = None # TODO
     
         self.weights = {}
-    
+        
+        
+    def unsmear_to_smear(self, A : dict):
+        """performs interpolation to get values that match up with poisson matrix (DO THIS AT END OF MP FOR ALL CALCULATIONS)"""
+        max_X = self.device.unitX / 4
+        max_Z = self.device.unitZ 
+        nx, nz = self.device.nx, self.device.nz
+        
+        # Create regular grid coordinates
+        x_grid = np.linspace(0, max_X, nx)
+        z_grid = np.linspace(0, max_Z, nz)
+        X_grid, Z_grid = np.meshgrid(x_grid, z_grid, indexing='ij')
+        
+        # Extract coordinates and values from dictionary (ignoring y-component)
+        points = []
+        values = []
+        for coord, value in A.items():
+            x, y, z = coord  
+            points.append([x, z])
+            values.append(value)
+        
+        points = np.array(points)
+        values = np.array(values)
+        
+        # Create target grid points for interpolation
+        grid_points = np.column_stack([X_grid.ravel(), Z_grid.ravel()])
+        
+        from scipy.interpolate import griddata
+        interpolated_values = griddata(points, values, grid_points, method='nearest', fill_value=0.0)
+        smeared_array = interpolated_values.reshape((nx, nz))
+        
+        return smeared_array
+        
+        
+        
     
     def calculate_real_GR(self, E):
         """This function returns real space greens function"""
@@ -75,33 +109,11 @@ class Charge():
     def _calculate_gf_simple(self, param):
         """Simple Green's function calculation"""
         energy, ky = param
-        eta = 1e-6
-        H = self.ham.create_sparse_channel_hamlitonian(ky, blocks=False)
+        G_R_diag, Gamma_L, Gamma_R = self.GF.compute_central_greens_function(energy, ky, compute_lesser=False)
         
-        # Add self-energies at contacts
-        lse = self.lse
-        sl = lse.self_energy(side="left",E= energy,ky= ky)
-        sr = lse.self_energy(side="right", E=energy,ky= ky)
-        
-        # Add to boundary blocks
-        H[:sl.shape[0], :sl.shape[0]] += sl
-        H[-sr.shape[0]:, -sr.shape[0]:] += sr
-        
-        # Construct and solve for Green's function
-        E_complex = energy + 1j * eta
-        H_gf = spa.csc_matrix(np.eye(H.shape[0], dtype=complex) * E_complex) - H
-        I = spa.csc_matrix(np.eye(H.shape[0], dtype=complex))
-        
-        # Solve for diagonal elements only (more memory efficient)
-        G_R = spla.spsolve(H_gf, I)
-        if spa.issparse(G_R):
-            G_R = G_R.diagonal()
-        else:
-            G_R = np.diagonal(G_R)
-        
-        return G_R
+        return G_R_diag
     
-    def calculate_LDOS(self, E):
+    def calculate_LDOS(self, E) -> dict:
         """Returned unsmeared version of LDOS"""
         G_R_REAL = self.calculate_real_GR(E)
         LDOS_points = {}
@@ -113,8 +125,7 @@ class Charge():
     
     def calculate_smeared_LDOS(self, E):
         LDOS_points = self.calculate_LDOS(E)
-        """interpolate from this to device array"""
-        raise NotImplemented
+        return self.unsmear_to_smear(LDOS_points)
         
     
     def fermi(self, E, mod="False"):
@@ -125,7 +136,12 @@ class Charge():
             return 1 /(1 + np.exp((E*np.ones_like(EFN) - Phi - EFN) / self.device.kbT))
     
     def compute_EFN_helper(self, E):
-        """This will be part for the bracket bisect way of finding the EFN, we take EC as """
+        """This will be part for the bracket bisect way of finding the EFN
+        , we take EC as 1.2 for now (note even if 'EC' is actually in the bandgap it 
+        makes no diff since LDOS is zero in bandgap)
+        
+        this function also uses vectorization to find EFN in entire device at the same time 
+        """
         LDOS_points = self.calculate_LDOS(E)
         
         # all are numpy arrays
@@ -259,4 +275,10 @@ class Charge():
     
     
     def calculate_n(self):
-        """This finds Gn and then integrates over """
+        """This finds Gn and then integrates over E and k. This entire function needs to be revamped to handle MP"""
+        self.GF.compute_electron_density()
+        # do multiprocessing to sum over E and k 
+        # then smear 
+        n_unsmeared = self.dosomething()
+        self.n = n_unsmeared
+        return self.unsmear_to_smear(n_unsmeared)

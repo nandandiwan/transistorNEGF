@@ -200,12 +200,18 @@ class GreensFunction:
             # Create full self-energy matrices
             self_energy_left = np.zeros_like(H, dtype=complex)
             self_energy_right = np.zeros_like(H, dtype=complex)
-            
+            dagger = lambda A: np.conjugate(A.T)
             # Apply self-energies to boundary blocks
             self_energy_size = sigma_L_block.shape[0]
             self_energy_left[:self_energy_size, :self_energy_size] = sigma_L_block
             self_energy_right[-self_energy_size:, -self_energy_size:] = sigma_R_block
-            
+            Gamma_L = 1j * (self_energy_left - self_energy_left.conj().T)
+            Gamma_R = 1j * (self_energy_right - self_energy_right.conj().T)
+  
+            # Compute lesser Green's function
+            f_L = self.fermi_distribution(np.real(E), self.device.Vs, self.device.kbT / self.device.q)
+            f_R = self.fermi_distribution(np.real(E), self.device.Vd, self.device.kbT / self.device.q)
+            self_energy_lesser = Gamma_L * f_L + Gamma_R * f_R
             # Determine block size from device structure
             # This should match the orbital structure
             block_size = self.ham.Nz * 2 * 10  # Use self-energy size as block size
@@ -219,92 +225,75 @@ class GreensFunction:
             A = E_matrix - H - self_energy_left - self_energy_right
             I_blk = np.eye(block_size, dtype=complex)
             
-            # Initialize storage for blocks (using list like in reference implementation)
+            # Initialize arrays (this style of storing data was taken from jiezi program)
             g_R_blocks = []
             g_lesser_blocks = []
+
+            
             G_R = [None] * num_blocks
             G_R_1 = [None] * (num_blocks - 1)
             G_lesser = [None] * num_blocks
             G_lesser_1 = [None] * (num_blocks - 1)
             
-            # Fermi distribution calculations
-            f_s = self.fermi_distribution(E, self.device.Vs, self.device.kbT / self.device.q)
-            f_d = self.fermi_distribution(E, self.device.Vd, self.device.kbT / self.device.q)
-            
-            # Construct broadening matrices and lesser self-energy
-            gamma_L = 1j * (self_energy_left - self_energy_left.conj().T)
-            gamma_R = 1j * (self_energy_right - self_energy_right.conj().T)
-            self_energy_lesser = gamma_L * f_s + gamma_R * f_d
-            
-            # Forward recursion: Calculate diagonal blocks of g_R and g_lesser
+            # Forward recursion: Calculate diagonal blocks of g_R
             for i in range(num_blocks):
                 start = i * block_size
-                end = (i + 1) * block_size
+                end = (i+1) * block_size
                 prev = (i - 1) * block_size
-                
                 if i == 0:
                     # First block
                     g_0_r = np.linalg.inv(A[start:end, start:end])
                     g_R_blocks.append(g_0_r)
-                    
-                    # g_lesser for first block
-                    g_0_lesser = g_0_r @ self_energy_lesser[start:end, start:end] @ g_0_r.conj().T
+                    #g_lesser
+                    g_0_lesser = g_0_r @ self_energy_lesser[start:end, start:end] @ dagger(g_0_r)
                     g_lesser_blocks.append(g_0_lesser)
-                else:
-                    # Effective Hamiltonian with coupling to previous block
+                else:          
+                    
                     H_eff = A[start:end, start:end] - A[start:end, prev:start] @ g_R_blocks[i-1] @ A[prev:start, start:end]
                     g_R_blocks.append(np.linalg.inv(H_eff))
-                    
-                    # g_i_lesser calculation (exact from reference)
-                    sigma_lesser = A[start:end, prev:start] @ g_lesser_blocks[i - 1] @ A[prev:start, start:end].conj().T
-                    g_i_lesser = g_R_blocks[i] @ (
-                        self_energy_lesser[start:end, start:end] + sigma_lesser -
-                        self_energy_lesser[start:end, prev:start] @ g_R_blocks[i - 1].conj().T @ A[prev:start, start:end].conj().T -
-                        A[start:end, prev:start] @ g_R_blocks[i-1] @ self_energy_lesser[prev:start, start:end]
-                    ) @ g_R_blocks[i].conj().T
-                    g_lesser_blocks.append(g_i_lesser)
-            
-            # Initialize last blocks for backward sweep
+
+                    #g_i_lesser calculation
+                    sigma_lesser = A[start:end, prev:start] @ g_lesser_blocks[i - 1] @ dagger(A[prev:start, start:end])
+                    g_i_lesser = g_R_blocks[i] @ (self_energy_lesser[start: end, start: end] + sigma_lesser - \
+                        self_energy_lesser[start:end, prev:start] @ dagger(g_R_blocks[i - 1]) @ dagger(A[prev:start, start:end]) - \
+                            A[start:end, prev:start] @ g_R_blocks[i-1] @ self_energy_lesser[prev:start, start:end]) @ dagger(g_R_blocks[i])
+                    g_lesser_blocks.append(g_i_lesser)        
+
             G_R[-1] = g_R_blocks[-1]
             G_lesser[-1] = g_lesser_blocks[-1]
-            
-            # Backward sweep: compute full Green's functions G_i
+
             for i in reversed(range(num_blocks - 1)):
                 start = i * block_size
-                end = (i + 1) * block_size
-                after = (i + 2) * block_size
+                end = (i+1)*block_size
+                after = (i+2)*block_size
+
                 
-                # Dyson equation for current block (exact from reference)
-                G_R[i] = g_R_blocks[i] @ (
-                    np.eye(block_size) + A[start:end, end:after] @ G_R[i+1] @ A[end:after, start:end] @ g_R_blocks[i]
-                )
+                # Dyson equation for current block
+                G_R[i] = g_R_blocks[i] @ (np.eye(block_size) + 
+                A[start:end, end:after]@G_R[i+1]@A[end:after, start:end]@g_R_blocks[i])
                 
                 G_R_1[i] = -G_R[i + 1] @ A[end:after, start:end] @ g_R_blocks[i]
                 
-                # Lesser function calculation (exact from reference)
-                gr0 = np.linalg.inv(E * np.eye(block_size) - H[start:end, start:end])
-                ga0 = gr0.conj().T
-                gr1 = np.linalg.inv(E * np.eye(block_size) - H[end:after, end:after])
-                ga1 = gr1.conj().T
-                gqq1 = gr0 @ self_energy_lesser[start:end, end:after] @ ga1
-                gq1q = gr1 @ self_energy_lesser[end:after, start:end] @ ga0
+            
+                #lesser function
                 
-                G_i_lesser = (
-                    g_lesser_blocks[i] + 
-                    g_R_blocks[i] @ (A[start:end, end:after] @ G_lesser[i + 1] @ A[end:after, start:end].conj().T) @ g_R_blocks[i].conj().T -
-                    (g_lesser_blocks[i] @ A[end:after, start:end] @ G_R_1[i].conj().T + G_R_1[i] @ A[end:after, start:end] @ g_lesser_blocks[i]) -
-                    (gqq1 @ A[end:after, start:end].conj().T @ G_R[i].conj().T + G_R[i] @ A[start:end, end:after] @ gq1q)
-                )
+                gr0 = np.linalg.inv(E * np.eye(block_size) - H[start:end, start:end]) 
+                ga0 = dagger(gr0)
+                gr1 = np.linalg.inv(E * np.eye(block_size) - H[end:after, end:after])
+                ga1 = dagger(gr1)
+                gqq1 = gr0 @ self_energy_lesser[start:end, end:after] @ ga1
+                gq1q = gr1 @ self_energy_lesser[end:after, start:end] @ ga0 
+                
+                G_i_lesser = g_lesser_blocks[i] + g_R_blocks[i] @ (A[start:end, end:after] @ G_lesser[i + 1] @ dagger(A[end:after, start:end])) @ dagger(g_R_blocks[i]) - \
+                    (g_lesser_blocks[i] @ A[end:after, start:end] @ dagger(G_R_1[i].T) + G_R_1[i].T @ A[end:after, start:end] @ g_lesser_blocks[i]) - \
+                        (gqq1 @ dagger(A[end:after, start:end]) @ dagger(G_R[i]) + G_R[i] @ A[start:end, end:after] @ gq1q)
                 
                 G_lesser[i] = G_i_lesser
                 
-                G_i_lesser_1 = (
-                    gq1q - G_R_1[i] @ A[start:end, end:after] @ gq1q - 
-                    G_R[i+1] @ A[end:after, start:end] @ g_lesser_blocks[i] -
-                    G_lesser[i+1] @ A[end:after, start:end].conj().T @ g_R_blocks[i].conj().T
-                )
+                G_i_lesser_1 = gq1q - G_R_1[i] @ A[start:end, end:after] @ gq1q - G_R[i+1] @ A[end:after,start:end] @ g_lesser_blocks[i] - \
+                    G_lesser[i+1] @ dagger(A[end:after,start:end]) @ dagger(g_R_blocks[i])
                 
-                G_lesser_1[i] = G_i_lesser_1
+                G_lesser_1[i] = G_i_lesser_1[0]
             
             # Extract diagonal elements and return results
             G_R_diag = np.concatenate([np.diag(block) for block in G_R])
