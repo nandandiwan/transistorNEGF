@@ -30,10 +30,8 @@ from lead_self_energy import LeadSelfEnergy
 import warnings
 
 
-class TranGreensFunction:
-    """
-    Green's function calculator using TRAN-style approach with sparse matrices.
-    """
+class GreensFunction:
+
     
     def __init__(self, device: Device, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio"):
         """
@@ -66,7 +64,7 @@ class TranGreensFunction:
     def compute_central_greens_function(self, E, ky=0.0, compute_lesser=True, 
                                       use_rgf=True, self_energy_method=None):
         """
-        Compute central region Green's functions following TRAN approach.
+        Compute central region Green's function
         
         This is the main function that computes G_R and optionally G_< for 
         the central device region.
@@ -98,12 +96,7 @@ class TranGreensFunction:
             return self._compute_direct_greens_function(E, ky, compute_lesser, self_energy_method)
     
     def _compute_direct_greens_function(self, E, ky, compute_lesser, self_energy_method):
-        """
-        Direct computation of Green's functions (like TRAN_Calc_CentGreen).
-        
-        This follows the OpenMX approach:
-        G_R = (E*S - H - Σ_L - Σ_R)^(-1)
-        """
+
         # Get channel Hamiltonian
         H = self.ham.create_sparse_channel_hamlitonian(ky, blocks=False)
         
@@ -188,7 +181,7 @@ class TranGreensFunction:
     
     def _compute_rgf_greens_function(self, E, ky, compute_lesser, self_energy_method):
         """
-        RGF computation
+        RGF computation, lesser greens function is wrong!!!
         """
         try:
             # Get full Hamiltonian matrix instead of blocks
@@ -483,7 +476,7 @@ def rgf(device, hamiltonian, E, ky=0.0, compute_lesser=True, **kwargs):
     Returns:
         Green's function results
     """
-    gf = TranGreensFunction(device, hamiltonian)
+    gf = GreensFunction(device, hamiltonian)
     return gf.compute_central_greens_function(E, ky, compute_lesser, **kwargs)
 
 
@@ -501,11 +494,11 @@ def transmission(device, hamiltonian, E, ky=0.0, **kwargs):
     Returns:
         Transmission coefficient
     """
-    gf = TranGreensFunction(device, hamiltonian)
+    gf = GreensFunction(device, hamiltonian)
     return gf.approx_compute_transmission(E, ky, **kwargs)
 
 
 def dos(device, hamiltonian, E, ky=0.0, **kwargs):
 
-    gf = TranGreensFunction(device, hamiltonian)
+    gf = GreensFunction(device, hamiltonian)
     return gf.compute_density_of_states(E, ky, **kwargs)
