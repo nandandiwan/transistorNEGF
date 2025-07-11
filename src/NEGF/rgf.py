@@ -426,7 +426,7 @@ class GreensFunction:
         
         return np.maximum(dos, 0.0)  # Ensure non-negative
     
-    def compute_electron_density(self, E, ky=0.0, self_energy_method=None):
+    def compute_electron_density(self, E, ky=0.0, self_energy_method=None, use_rgf=False):
         """
         Compute local electron density: n(r) = -Im[G_<]/π.
         
@@ -439,7 +439,7 @@ class GreensFunction:
             1D array of local electron density values
         """
         _, G_lesser_diag, _, _ = self.compute_central_greens_function(
-            E, ky, compute_lesser=True, use_rgf=True,
+            E, ky, compute_lesser=True, use_rgf=use_rgf,
             self_energy_method=self_energy_method
         )
         
