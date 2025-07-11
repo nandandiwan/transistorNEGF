@@ -43,9 +43,7 @@ This module implements finite-size tight-binding calculations for silicon with q
 **`plotter.py`**
 - Visualization tools for band structures, DOS, and atomic configurations
 
-#### Notebooks:
-- `dos.ipynb`: Density of states calculations and analysis
-- `selfConsistent.ipynb`: Self-consistent tight-binding calculations
+ns
 
 ### 2. NEGF Quantum Transport (`src/NEGF/`)
 
@@ -58,11 +56,12 @@ This module implements the full NEGF formalism for quantum transport in silicon 
 - `rgf.py`: Recursive Green's Function implementation (lesser greens function is broken)
 - `hamiltonian.py`: Device Hamiltonian construction with tight-binding basis
 - `device.py`: Device geometry and material parameter management
+- `charge.py`: DOS and LDOS calculations via multiprocessing
 
 **Lead Self-Energy Calculations:**
 - `lead_self_energy.py`: Robust implementation with multiple algorithms
 - Implements Sancho-Rubio, iterative, and transfer matrix methods
-- Based on OpenMX `TRAN_Calc_SurfGreen` algorithms
+- Based on OpenMX algorithms
 - See `LEAD_SELF_ENERGY_DOCUMENTATION.md` for detailed implementation notes
 
 **Electrostatics and Transport:**
@@ -98,7 +97,7 @@ See `src/NEGF/test_device_multiple_orbitals.ipynb` for a full working simulation
 
 ## Technical Details
 
-### Physics Implementation
+### Physics 
 - **Quantum Confinement**: Finite tight-binding in z-direction captures quantum confinement effects
 - **Transport**: NEGF formalism with proper lead self-energies and scattering
 - **Electrostatics**: Self-consistent Poisson equation solution

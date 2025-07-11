@@ -151,7 +151,7 @@ class Hamiltonian:
         if side == 'left':
             orientation = (0, 1, 2, 3)  # Always use same orientation
         elif side == "right":
-            orientation = tuple([(self.layer_right_lead + i) % 4 for i in range(1, 5)])
+            orientation = tuple([(self.layer_right_lead - i) % 4 for i in range(1, 5)])
         
         # Create 8-layer system: two adjacent 4-layer supercells
         # This allows us to extract H01 as coupling between supercells

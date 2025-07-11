@@ -135,6 +135,7 @@ class UnitCell:
                     self.danglingBondsZ[atom].append((neighbor, UnitCell.determine_hybridization(delta)))
                 elif not self.check_in_x_direction(neighbor):
                     if self.not_NEGF:
+                        # hydrogen passivation on the top too
                         self.danglingBondsZ[atom].append((neighbor, UnitCell.determine_hybridization(delta)))    
                     
                     self.danglinbBondsX.add(neighbor)
