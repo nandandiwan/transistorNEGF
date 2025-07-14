@@ -233,41 +233,24 @@ class Charge():
         # all are numpy arrays
         return LDOS_points * self.fermi(E)
     
-    def calculate_band_edges(self):
-        """Find conduction band minimum (Ec) and valence band maximum (Ev) from DOS calculation
-        
-        Note: TB parameters are set so that Ev = 0 (valence band maximum at zero energy)
-        """
-        energy_range = np.linspace(-3.0, 3.0, 300)
+    def calculate_EC(self):
+        """Find conduction band minimum from DOS calculation"""
+        energy_range = self.energy_range
         _, dos_values = self.calculate_DOS(energy_range=energy_range, save_data=False)
         
-        # Find significant DOS threshold
+        # Find first significant DOS peak (conduction band minimum)
         dos_threshold = 0.01 * np.max(dos_values)
         significant_indices = np.where(dos_values > dos_threshold)[0]
         
-        Ec = None
-        Ev = 0.0  # Fixed: TB parameters set valence band maximum to zero
-        
         if len(significant_indices) > 0:
-            # Find conduction band minimum (first peak above zero energy)
+            # Look for the first peak above zero energy (conduction band)
             positive_energy_indices = significant_indices[energy_range[significant_indices] > 0]
             if len(positive_energy_indices) > 0:
                 ec_index = positive_energy_indices[0]
-                Ec = energy_range[ec_index]
+                return energy_range[ec_index]
         
-        # Default fallback for Ec
-        if Ec is None:
-            Ec = 1.2
-            print("Warning: Could not determine Ec from DOS, using default value 1.2 eV")
-        
-        print(f"Band edges determined: Ev = {Ev:.3f} eV, Ec = {Ec:.3f} eV")
-            
-        return Ec, Ev
-    
-    def calculate_EC(self):
-        """Find conduction band minimum from DOS calculation (backward compatibility)"""
-        Ec, _ = self.calculate_band_edges()
-        return Ec
+        # Default fallback
+        return 1.2
     
     def calculate_DOS(self, energy_range=None, ky_range=None, method="sancho_rubio", 
                      eta=1e-6, save_data=True, filename="dos_data.txt"):
@@ -473,12 +456,13 @@ class Charge():
         
         # Integration weights
         dE = energy_range[1] - energy_range[0] if len(energy_range) > 1 else 1.0
-        dk = (ky_range[1] - ky_range[0]) * 2*np.pi / (5.431e-10) if len(ky_range) > 1 else 1.0
+        # For now, simplify k-space integration - treat as normalized integration over [0,1]
+        dk = (ky_range[1] - ky_range[0]) if len(ky_range) > 1 else 1.0
         
         # Integrate over energy and k-space
         # First average over ky, then integrate over energy
         density_vs_energy = np.mean(density_results, axis=1)  # Average over ky
-        total_density = np.trapz(density_vs_energy, dx=dE, axis=0) * dk / (2 * np.pi)
+        total_density = np.trapz(density_vs_energy, dx=dE, axis=0) * dk
         
         end_time = time.time()
         print(f"Total density calculation completed in {end_time - start_time:.2f} seconds")
@@ -590,20 +574,6 @@ class Charge():
         print(f"Solving EFN with {len(energy_range)} energy points")
         print(f"Method: {method}, kT: {kT:.4f} eV, Tolerance: {tolerance:.0e}")
         
-        # Get band edges for proper EFN bounds
-        Ec, Ev = self.calculate_band_edges()
-        
-        # Validate EFN bounds for TB model (Ev = 0)
-        if efn_bounds is None:
-            efn_bounds = (Ev - 1.0, Ec + 1.0)  # Allow some margin around physical bounds
-        else:
-            # Validate user-provided bounds
-            if efn_bounds[0] > Ec or efn_bounds[1] < Ev:
-                raise ValueError(f"EFN bounds {efn_bounds} are unphysical. "
-                               f"EFN must be between Ev={Ev:.3f} and Ec={Ec:.3f} eV for TB model.")
-        
-        print(f"Using EFN bounds: {efn_bounds[0]:.3f} to {efn_bounds[1]:.3f} eV")
-        
         # Initialize EFN solver
         solver = EFNSolver(kT=kT, tolerance=tolerance)
         
@@ -635,7 +605,7 @@ class Charge():
         print("Solving EFN across device grid...")
         efn_grid = solver.solve_efn_grid(
             energy_range, dos_grid, potential_grid, density_grid, 
-            efn_bounds=efn_bounds, show_progress=True, Ec=Ec
+            efn_bounds=efn_bounds, show_progress=True
         )
         
         # Update the charge object

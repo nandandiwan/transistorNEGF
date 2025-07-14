@@ -163,8 +163,8 @@ class GreensFunction:
             return G_R_diag, Gamma_L, Gamma_R
         
         # Compute lesser Green's function
-        f_L = self.fermi_distribution(E, self.device.Vs, self.device.kbT / self.device.q)
-        f_R = self.fermi_distribution(E, self.device.Vd, self.device.kbT / self.device.q)
+        f_L = self.fermi_distribution(E, self.device.Vs, self.device.kbT_eV)
+        f_R = self.fermi_distribution(E, self.device.Vd, self.device.kbT_eV)
         
         # Use LIL format for efficient construction
         Sigma_lesser_lil = lil_matrix((n, n), dtype=complex)
@@ -209,8 +209,8 @@ class GreensFunction:
             Gamma_R = 1j * (self_energy_right - self_energy_right.conj().T)
   
             # Compute lesser Green's function
-            f_L = self.fermi_distribution(np.real(E), self.device.Vs, self.device.kbT / self.device.q)
-            f_R = self.fermi_distribution(np.real(E), self.device.Vd, self.device.kbT / self.device.q)
+            f_L = self.fermi_distribution(np.real(E), self.device.Vs, self.device.kbT_eV)
+            f_R = self.fermi_distribution(np.real(E), self.device.Vd, self.device.kbT_eV)
             self_energy_lesser = Gamma_L * f_L + Gamma_R * f_R
             # Determine block size from device structure
             # This should match the orbital structure

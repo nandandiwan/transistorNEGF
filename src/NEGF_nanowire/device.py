@@ -1,8 +1,8 @@
 import numpy as np
 import scipy.constants as spc
-
+from NEGF_device_generation import UnitCell
 class Device:
-    def __init__(self, channel_length = 9.33e-9, channel_thickness = 3e-9, nx=40, nz=50, T=300.0, material_params=None):
+    def __init__(self, channel_length = 0.5431 *10e-9, channel_width = 0.5431 *15e-9, channel_thickness = 0.5431 *3e-9, nx=40, ny = 40, nz=50, T=300.0, material_params=None):
         # Physical constants
         self.T = T  # Use the passed temperature parameter
         self.q = spc.e
@@ -13,32 +13,35 @@ class Device:
         self.m0 = spc.m_e
 
         self.epsilon_0 = spc.epsilon_0
-        self.a = 5.431e-10
+        self.a = .5431e-10
         self.V_thermal = self.kbT_eV  # Thermal voltage in eV
-        
-        # hamiltonian params
-        self.block_width = 0.25 * self.a 
-        self.block_height = 0.75 * self.a
-        
+                
         
         self.channel_length = channel_length
         self.channel_thickness = channel_thickness
+        self.channel_width = channel_width
+        
+        
+        self.unitCell = UnitCell(channel_length, channel_width, channel_thickness)
         # hamiltonian parameters
-        self.unitX = int(self.channel_length // self.block_width)
-        self.unitZ = int(self.channel_thickness // self.block_height)
+        self.unitX = self.unitCell.Nx
+        self.unitY = self.unitCell.Ny
+        self.unitZ = self.unitCell.Nz
+        
         
         # voltage 
         self.VG = 0.0
         self.Vs = 0
         self.Vd = 0
     
-        # arrays for poisson 
-        self.channel_length = channel_length
-        self.thickness = channel_thickness
+
         self.nx = nx
+        self.ny = ny
         self.nz = nz
+        
         self.dx = self.channel_length / (self.nx - 1) if self.nx > 1 else self.channel_length
-        self.dz = self.thickness / (self.nz - 1) if self.nz > 1 else self.thickness
+        self.dy = self.channel_width / (self.ny - 1) if self.ny > 1 else self.channel_width
+        self.dz = self.channel_thickness / (self.nz - 1) if self.nz > 1 else self.channel_thickness
         
         if material_params is None:
             self.epsilon_rel = 11.7  # Relative permittivity of Silicon
@@ -64,16 +67,16 @@ class Device:
         self.N_acceptor = 1.0e21  # Acceptor concentration for P-type regions [m^-3] (e.g., 1e15 cm^-3)
 
         # --- Core Arrays ---
-        self.potential = np.zeros((self.nx, self.nz))  # Electric potential [V]
-        self.Ec = np.zeros((self.nx, self.nz))         # Conduction band edge [J]
-        self.Ev = np.zeros((self.nx, self.nz))         # Valence band edge [J]
-        self.doping_profile = np.zeros((self.nx, self.nz)) # Net doping (Nd-Na) [m^-3]
-        self.epsilon = np.full((self.nx - 1, self.nz - 1), self.epsilon_val) # Permittivity map [F/m]
+        self.potential = np.zeros((self.nx, self.ny, self.nz))  # Electric potential [V]
+        self.Ec = np.zeros((self.nx, self.ny, self.nz))         # Conduction band edge [J]
+        self.Ev = np.zeros((self.nx, self.ny, self.nz))         # Valence band edge [J]
+        self.doping_profile = np.zeros((self.nx, self.ny, self.nz)) # Net doping (Nd-Na) [m^-3]
+        self.epsilon = np.full((self.nx - 1, self.ny - 1, self.nz - 1), self.epsilon_val) # Permittivity map [F/m]
 
-        self.n = np.zeros((self.nx, self.nz))          # Electron concentration [m^-3]
-        self.p = np.zeros((self.nx, self.nz))          # Hole concentration [m^-3]
-        self.Efn = np.zeros((self.nx, self.nz))        # Electron quasi-Fermi level [J]
-        self.Efp = np.zeros((self.nx, self.nz))        # Hole quasi-Fermi level [J]
+        self.n = np.zeros((self.nx, self.ny, self.nz))          # Electron concentration [m^-3]
+        self.p = np.zeros((self.nx, self.ny, self.nz))          # Hole concentration [m^-3]
+        self.Efn = np.zeros((self.nx, self.ny, self.nz))        # Electron quasi-Fermi level [J]
+        self.Efp = np.zeros((self.nx, self.ny, self.nz))        # Hole quasi-Fermi level [J]
 
 
         self._initialize_doping_profile()
@@ -87,17 +90,17 @@ class Device:
         p_region_end_idx = 4 * (self.nx // 5)
         for i in range(self.nx):
             if i < n_region1_end_idx:
-                self.doping_profile[i, :] = self.N_donor
+                self.doping_profile[i, :, :] = self.N_donor
             elif i < p_region_end_idx:
-                self.doping_profile[i, :] = -self.N_acceptor
+                self.doping_profile[i, :,: ] = -self.N_acceptor
             else:
-                self.doping_profile[i, :] = self.N_donor
+                self.doping_profile[i, :,:] = self.N_donor
     
     
     def _initialize_band_edges_flat_band(self):
         """Initializes Ec and Ev. Assumes V=0 initially. Ec = -xi - qV."""
-        self.Ec[:, :] = -self.xi # Assuming xi is defined as energy from vacuum (0) to Ec
-        self.Ev[:, :] = self.Ec - self.Eg
+        self.Ec[:, :,:] = -self.xi # Assuming xi is defined as energy from vacuum (0) to Ec
+        self.Ev[:, :,:] = self.Ec - self.Eg
 
 
 

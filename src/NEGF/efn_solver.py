@@ -63,7 +63,7 @@ class EFNSolver:
     
     def charge_balance_function(self, efn: float, energy_list: np.ndarray, 
                                dos_at_point: np.ndarray, potential: float, 
-                               target_density: float, Ec: float = None) -> float:
+                               target_density: float) -> float:
         """
         Charge balance function for root finding: f(EFN) = n_calculated - n_target.
         
@@ -76,21 +76,15 @@ class EFNSolver:
             dos_at_point: DOS values at each energy for this spatial point
             potential: Electrostatic potential at this point
             target_density: Target electron density at this point
-            Ec: Conduction band minimum (if None, uses first energy > 0)
             
         Returns:
             Difference between calculated and target density
         """
-        # Calculate n = ∫[Ec to ∞] DOS(E) * f(E - φ - EFN) dE
-        # Integration starts from conduction band minimum (Ec)
-        if Ec is None:
-            # Default: find first energy above zero (conduction band starts)
-            ec_index = np.searchsorted(energy_list, 0.0)
-        else:
-            ec_index = np.searchsorted(energy_list, Ec)
-            
-        E_conduction = energy_list[ec_index:]
-        dos_conduction = dos_at_point[ec_index:]
+        # Calculate n = ∫ DOS(E) * f(E - φ - EFN) dE
+        # Only integrate over conduction band (positive energies)
+        zero_index = np.searchsorted(energy_list, 0.0)
+        E_conduction = energy_list[zero_index:]
+        dos_conduction = dos_at_point[zero_index:]
         
         if len(E_conduction) == 0:
             return -target_density
@@ -99,16 +93,14 @@ class EFNSolver:
         fermi_args = E_conduction - potential - efn
         fermi_values = self.fermi_dirac(fermi_args)
         
-        # Integrate using trapezoidal rule (using scipy's trapz for consistency)
-        from scipy.integrate import trapezoid
+        # Integrate using trapezoidal rule
         calculated_density = trapezoid(dos_conduction * fermi_values, E_conduction)
         
         return calculated_density - target_density
     
     def solve_efn_point(self, energy_list: np.ndarray, dos_at_point: np.ndarray,
                        potential: float, target_density: float,
-                       efn_bounds: Optional[Tuple[float, float]] = None,
-                       Ec: Optional[float] = None) -> Optional[float]:
+                       efn_bounds: Optional[Tuple[float, float]] = None) -> Optional[float]:
         """
         Solve for EFN at a single spatial point using Brent's method.
         
@@ -118,28 +110,16 @@ class EFNSolver:
             potential: Electrostatic potential at this point
             target_density: Target electron density at this point
             efn_bounds: Optional bounds for EFN search (min, max)
-            Ec: Conduction band minimum (for proper integration bounds)
             
         Returns:
             Electron quasi-fermi energy at this point, or None if no solution found
         """
-        # Determine Ec if not provided
-        if Ec is None:
-            # Find first energy > 0 as approximate Ec
-            positive_energies = energy_list[energy_list > 0]
-            Ec = positive_energies[0] if len(positive_energies) > 0 else 0.0
-        
-        # Set physics-based bounds: EFN must be between Ev=0 and Ec (for semiconductors)
+        # Set default bounds if not provided
         if efn_bounds is None:
-            # For TB with Ev=0: EFN should be between 0 and Ec, but allow some margin
-            efn_bounds = (0.0 - 2.0, Ec + 2.0)
+            E_min, E_max = energy_list[0], energy_list[-1]
+            efn_bounds = (E_min - 10.0, E_max + 10.0)
         
         a, b = efn_bounds
-        
-        # Validate bounds: EFN should be between Ev=0 and Ec for physical systems
-        if a > Ec or b < 0:
-            raise ValueError(f"EFN bounds ({a:.3f}, {b:.3f}) are unphysical. "
-                           f"EFN must be between Ev=0 and Ec={Ec:.3f} eV for this TB model.")
         
         # Check if target density is too small (numerical limit)
         if target_density < 1e-22:
@@ -147,8 +127,8 @@ class EFNSolver:
             return efn_bounds[0]
         
         # Evaluate function at bounds
-        f_a = self.charge_balance_function(a, energy_list, dos_at_point, potential, target_density, Ec)
-        f_b = self.charge_balance_function(b, energy_list, dos_at_point, potential, target_density, Ec)
+        f_a = self.charge_balance_function(a, energy_list, dos_at_point, potential, target_density)
+        f_b = self.charge_balance_function(b, energy_list, dos_at_point, potential, target_density)
         
         # Check if root exists in interval
         if f_a * f_b > 0:
@@ -156,20 +136,20 @@ class EFNSolver:
             if f_a > 0 and f_b > 0:
                 # Both positive - EFN should be lower
                 return self._find_efn_with_extended_bounds(
-                    energy_list, dos_at_point, potential, target_density, a, "lower", Ec
+                    energy_list, dos_at_point, potential, target_density, a, "lower"
                 )
             elif f_a < 0 and f_b < 0:
                 # Both negative - EFN should be higher
                 return self._find_efn_with_extended_bounds(
-                    energy_list, dos_at_point, potential, target_density, b, "higher", Ec
+                    energy_list, dos_at_point, potential, target_density, b, "higher"
                 )
         
         # Use Brent's method for root finding
-        return self._brent_method(energy_list, dos_at_point, potential, target_density, a, b, Ec)
+        return self._brent_method(energy_list, dos_at_point, potential, target_density, a, b)
     
     def _find_efn_with_extended_bounds(self, energy_list: np.ndarray, dos_at_point: np.ndarray,
                                      potential: float, target_density: float, 
-                                     start_point: float, direction: str, Ec: float) -> Optional[float]:
+                                     start_point: float, direction: str) -> Optional[float]:
         """
         Find EFN with extended bounds when initial bounds don't bracket the root.
         
@@ -180,39 +160,32 @@ class EFNSolver:
             target_density: Target electron density
             start_point: Starting point for bound extension
             direction: "lower" or "higher" to extend bounds
-            Ec: Conduction band minimum
             
         Returns:
             EFN value or None if no solution found
         """
-        step = 0.1  # Smaller step for TB models
+        step = 1.0
         max_iterations = 50
         
         for i in range(max_iterations):
             if direction == "lower":
                 new_bound = start_point - step * (i + 1)
-                # Don't go too far below Ev=0
-                if new_bound < -5.0:
-                    break
-                f_new = self.charge_balance_function(new_bound, energy_list, dos_at_point, potential, target_density, Ec)
-                f_old = self.charge_balance_function(start_point, energy_list, dos_at_point, potential, target_density, Ec)
+                f_new = self.charge_balance_function(new_bound, energy_list, dos_at_point, potential, target_density)
+                f_old = self.charge_balance_function(start_point, energy_list, dos_at_point, potential, target_density)
                 if f_new * f_old < 0:
-                    return self._brent_method(energy_list, dos_at_point, potential, target_density, new_bound, start_point, Ec)
+                    return self._brent_method(energy_list, dos_at_point, potential, target_density, new_bound, start_point)
             else:  # direction == "higher"
                 new_bound = start_point + step * (i + 1)
-                # Don't go too far above Ec
-                if new_bound > Ec + 5.0:
-                    break
-                f_new = self.charge_balance_function(new_bound, energy_list, dos_at_point, potential, target_density, Ec)
-                f_old = self.charge_balance_function(start_point, energy_list, dos_at_point, potential, target_density, Ec)
+                f_new = self.charge_balance_function(new_bound, energy_list, dos_at_point, potential, target_density)
+                f_old = self.charge_balance_function(start_point, energy_list, dos_at_point, potential, target_density)
                 if f_new * f_old < 0:
-                    return self._brent_method(energy_list, dos_at_point, potential, target_density, start_point, new_bound, Ec)
+                    return self._brent_method(energy_list, dos_at_point, potential, target_density, start_point, new_bound)
         
         warnings.warn(f"Could not find bracketing bounds for EFN at density {target_density}")
         return None
     
     def _brent_method(self, energy_list: np.ndarray, dos_at_point: np.ndarray,
-                     potential: float, target_density: float, a: float, b: float, Ec: float) -> Optional[float]:
+                     potential: float, target_density: float, a: float, b: float) -> Optional[float]:
         """
         Brent's method for robust root finding (adapted from Jiezi implementation).
         
@@ -222,13 +195,12 @@ class EFNSolver:
             potential: Electrostatic potential
             target_density: Target electron density
             a, b: Initial brackets for the root
-            Ec: Conduction band minimum
             
         Returns:
             Root (EFN value) or None if convergence fails
         """
         def func_F(efn):
-            return self.charge_balance_function(efn, energy_list, dos_at_point, potential, target_density, Ec)
+            return self.charge_balance_function(efn, energy_list, dos_at_point, potential, target_density)
         
         f_a = func_F(a)
         f_b = func_F(b)
@@ -311,7 +283,7 @@ class EFNSolver:
     def solve_efn_grid(self, energy_list: np.ndarray, dos_grid: np.ndarray,
                       potential_grid: np.ndarray, density_grid: np.ndarray,
                       efn_bounds: Optional[Tuple[float, float]] = None,
-                      show_progress: bool = True, Ec: Optional[float] = None) -> np.ndarray:
+                      show_progress: bool = True) -> np.ndarray:
         """
         Solve for EFN across the entire device grid.
         
@@ -322,7 +294,6 @@ class EFNSolver:
             density_grid: Target electron density (2D array: N_x × N_z)
             efn_bounds: Optional bounds for EFN search
             show_progress: Whether to show progress information
-            Ec: Conduction band minimum (if None, estimated from energy_list)
             
         Returns:
             EFN grid (2D array: N_x × N_z)
@@ -330,19 +301,11 @@ class EFNSolver:
         N_E, N_x, N_z = dos_grid.shape
         efn_grid = np.zeros((N_x, N_z))
         
-        # Determine Ec if not provided
-        if Ec is None:
-            positive_energies = energy_list[energy_list > 0]
-            Ec = positive_energies[0] if len(positive_energies) > 0 else 0.0
-            if show_progress:
-                print(f"Using estimated Ec = {Ec:.3f} eV")
-        
         total_points = N_x * N_z
         failed_points = 0
         
         if show_progress:
             print(f"Solving EFN for {total_points} grid points...")
-            print(f"Ev = 0.0 eV, Ec = {Ec:.3f} eV (TB model)")
             start_time = time.time()
         
         for i in range(N_x):
@@ -353,17 +316,12 @@ class EFNSolver:
                 
                 # Solve for EFN at this point
                 efn = self.solve_efn_point(energy_list, dos_at_point, potential, 
-                                         target_density, efn_bounds, Ec)
+                                         target_density, efn_bounds)
                 
                 if efn is not None:
                     efn_grid[i, j] = efn
-                    
-                    # Validate EFN is within reasonable bounds for TB model
-                    if efn < -2.0 or efn > Ec + 2.0:
-                        if show_progress and (i + j) % 100 == 0:  # Occasional warning
-                            print(f"Warning: EFN = {efn:.3f} eV at ({i},{j}) may be unphysical")
                 else:
-                    efn_grid[i, j] = 0.0  # Default to Ev for failed points
+                    efn_grid[i, j] = efn_bounds[0] if efn_bounds else energy_list[0] - 10.0
                     failed_points += 1
             
             # Progress update
@@ -422,12 +380,9 @@ class EFNSolver:
         density_dict = charge_calc.calculate_total_electron_density(energy_range)
         density_grid = charge_calc.unsmear_to_smear(density_dict)
         
-        # Get band edges from charge calculation
-        Ec, Ev = charge_calc.calculate_band_edges()
-        
         # Solve for EFN
         return self.solve_efn_grid(energy_range, dos_grid, potential_grid, 
-                                 density_grid, efn_bounds, Ec=Ec)
+                                 density_grid, efn_bounds)
 
 
 # Convenience functions for backward compatibility and easy usage
