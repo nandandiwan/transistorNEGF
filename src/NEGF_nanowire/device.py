@@ -3,7 +3,7 @@ import scipy.constants as spc
 from NEGF_device_generation import UnitCell
 class Device:
     def __init__(self, channel_length = 0.5431 *10e-9, channel_width = 0.5431 *15e-9, channel_thickness = 0.5431 *3e-9, 
-                 nx=40, ny = 40, nz=50, T=300.0, material_params=None, equilibrium=True):
+                 nx=40, ny = 40, nz=50, T=300.0, material_params=None, equilibrium=False):
         # Physical constants
         self.T = T  # Use the passed temperature parameter
         self.q = spc.e
