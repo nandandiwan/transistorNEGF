@@ -62,7 +62,7 @@ class GreensFunction:
         return E
     
     def compute_central_greens_function(self, E, compute_lesser=True, 
-                                      use_rgf=True, self_energy_method=None):
+                                      use_rgf=True, self_energy_method=None, equilibrium=False):
         """
         Compute central region Green's function
         
@@ -90,19 +90,25 @@ class GreensFunction:
         # Get Hamiltonian and self-energies
         if use_rgf:
             # Use block-wise RGF for large systems
-            return self._compute_rgf_greens_function(E, compute_lesser, self_energy_method)
+            return self._compute_rgf_greens_function(E, compute_lesser, self_energy_method, equilibrium = equilibrium)
         else:
             # Direct matrix inversion for smaller systems
-            return self._compute_direct_greens_function(E,compute_lesser, self_energy_method)
+            return self._compute_direct_greens_function(E,compute_lesser, self_energy_method,equilibrium = equilibrium)
     
-    def _compute_direct_greens_function(self, E, compute_lesser, self_energy_method):
+    def _compute_direct_greens_function(self, E, compute_lesser, self_energy_method, equilibrium = False):
 
+        if equilibrium and compute_lesser:
+            raise Exception("cant have equilbrium and lesser at same time")
         # Get channel Hamiltonian
         H = self.ham.create_sparse_channel_hamlitonian(blocks=False)
         
         # Get self-energies using existing implementation
         sigma_L = self.lead_self_energy.self_energy("left", E, self_energy_method)
         sigma_R = self.lead_self_energy.self_energy("right", E, self_energy_method)
+        
+        if equilibrium:
+            sigma_L*= 0
+            sigma_R *= 0
         
         # Convert to sparse matrices
         if not sp.issparse(H):
@@ -163,6 +169,7 @@ class GreensFunction:
             return G_R_diag, Gamma_L, Gamma_R
         
         # Compute lesser Green's function
+        
         f_L = self.fermi_distribution(E, self.device.Vs, self.device.kbT_eV)
         f_R = self.fermi_distribution(E, self.device.Vd, self.device.kbT_eV)
         
@@ -179,10 +186,13 @@ class GreensFunction:
         
         return G_R_diag, G_lesser_diag, Gamma_L, Gamma_R
     
-    def _compute_rgf_greens_function(self, E, compute_lesser, self_energy_method):
+    def _compute_rgf_greens_function(self, E, compute_lesser, self_energy_method,equilibrium = False):
         """
         RGF computation, lesser greens function is wrong!!!
         """
+
+        if equilibrium and compute_lesser:
+            raise Exception("cant have equilbrium and lesser at same time")
         try:
             # Get full Hamiltonian matrix instead of blocks
             H = self.ham.create_sparse_channel_hamlitonian(blocks=False)
@@ -194,6 +204,10 @@ class GreensFunction:
             # Get self-energies and construct full matrices
             sigma_L_block = self.lead_self_energy.self_energy("left", E, self_energy_method)
             sigma_R_block = self.lead_self_energy.self_energy("right", E, self_energy_method)
+            
+            if equilibrium:
+                sigma_L_block*= 0
+                sigma_R_block *= 0
             
             N = H.shape[0]
             
@@ -405,7 +419,7 @@ class GreensFunction:
         
         return max(0.0, T)  # Ensure non-negative
     
-    def compute_density_of_states(self, E, self_energy_method=None):
+    def compute_density_of_states(self, E, self_energy_method=None, equilibrium=False):
         """
         Compute local density of states: DOS(E) = -Im[G_R]/pi.
         
@@ -419,7 +433,7 @@ class GreensFunction:
         """
         G_R_diag, _, _ = self.compute_central_greens_function(
             E, compute_lesser=False, use_rgf=True,
-            self_energy_method=self_energy_method
+            self_energy_method=self_energy_method, equilibrium=equilibrium
         )
         
         dos = -np.imag(G_R_diag) / np.pi

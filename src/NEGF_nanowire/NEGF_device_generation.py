@@ -49,36 +49,52 @@ class UnitCell:
     def createRotationMatrix(theta):
         return np.array([[np.cos(theta), -np.sin(theta)],[np.sin(theta), np.cos(theta)]])
     
-    raw_deltas = {
-            0: [(+0.25, +0.25, +0.25), (+0.25, -0.25, -0.25),
-                (-0.25, +0.25, -0.25), (-0.25, -0.25, +0.25)],
-            1: [(-0.25, -0.25, -0.25), (-0.25, +0.25, +0.25),
-                (+0.25, -0.25, +0.25), (+0.25, +0.25, -0.25)]
-        }
+
     
     
     orientation_to_start ={
         (0,1,2,3) : Atom(0,0,0),
         (1,2,3,0) : Atom(0,0.25,0.25),
         (2,3,0,1) : Atom(0,0.5,0),
-        (3,0,1,2) : Atom(0,0.75, 0.25)
+        (3,0,1,2) : Atom(0,0.75, 0.25),
+        (0,3,2,1) : Atom(0,0,0),
+        (1,0,3,1) : Atom(0,0.25,0.25),
+        (2,1,0,3) : Atom(0,0.5,0),
+        (3,2,1,0) : Atom(0,0.75, 0.25)
     } 
 
 
     @staticmethod
     def determine_hybridization(delta):
         sign_pattern = np.sign(delta)
-        if np.array_equal(sign_pattern, [1, 1, 1]):       # Type a
+        if np.array_equal(sign_pattern, [1, 1, 1]) or np.array_equal(sign_pattern, [-1, -1, -1]):       # Type a
             return 0
-        elif np.array_equal(sign_pattern, [1, -1, -1]):   # Type b
+        elif np.array_equal(sign_pattern, [1, -1, -1]) or np.array_equal(sign_pattern, [-1, 1, 1]):   # Type b
             return 1
-        elif np.array_equal(sign_pattern, [-1, 1, -1]):   # Type c
+        elif np.array_equal(sign_pattern, [-1, 1, -1]) or np.array_equal(sign_pattern, [1, -1, 1]):   # Type c
             return 2
-        elif np.array_equal(sign_pattern, [-1, -1, 1]):   # Type d
+        elif np.array_equal(sign_pattern, [-1, -1, 1]) or np.array_equal(sign_pattern, [1, 1, -1]):   # Type d
             return 3
+        else:
+            raise Exception("error in hybridization")
     
     a = 0.5431e-9
-    def __init__(self, channel_length : float, channel_width : float, channel_thickness : float, orientation = (0,1,2,3), not_NEGF = False):
+    def classify_permutation(p: tuple) -> int | str:
+        """
+        Classifies a tuple if it's a cyclic permutation of (0,1,2,3) or (3,2,1,0).
+        """
+        if not isinstance(p, tuple) or sorted(list(p)) != [0, 1, 2, 3]:
+            raise ValueError
+
+        if all((p[i] + 1) % 4 == p[(i + 1) % 4] for i in range(4)):
+            return 0
+        if all((p[i] - 1) % 4 == p[(i + 1) % 4] for i in range(4)):
+            
+            return (3 - p[0] + 4) % 4 + 1
+        
+        # If the permutation is valid but doesn't fit the defined patterns.
+        return "Error: Sequence is not cyclically ascending or descending."
+    def __init__(self, channel_length : float, channel_width : float, channel_thickness : float, orientation = (0,1,2,3), equilibrium_GF = False):
         """
         Builds the nanowire unit cell. 
         
@@ -87,16 +103,24 @@ class UnitCell:
         self.channel_length = channel_length
         self.channel_width = channel_width
         self.channel_thickness = channel_thickness 
+        self.equilibrium_GF = equilibrium_GF
         
         self.Nz = round(channel_thickness / self.a * 100) /100
         self.Nx = round(self.channel_length / self.a * 100) / 100
         self.Ny = round(self.channel_width / self.a * 100) / 100
-   
+        self.raw_deltas = {
+            ((0 + UnitCell.classify_permutation(orientation)) % 2): [(+0.25, +0.25, +0.25), (+0.25, -0.25, -0.25),
+                (-0.25, +0.25, -0.25), (-0.25, -0.25, +0.25)],
+            ((1 + UnitCell.classify_permutation(orientation)) % 2): [(-0.25, -0.25, -0.25), (-0.25, +0.25, +0.25),
+                (+0.25, -0.25, +0.25), (+0.25, +0.25, -0.25)]
+        }
         self.ATOM_POSITIONS = [] # the order of atoms in this cell is very important as this governs the layer structure 
         self.neighbors = {}
         self.danglingBonds = {}
         self.addAtoms(UnitCell.orientation_to_start[orientation])
         self.map_neighbors_and_dangling_bonds()
+        
+
     def check_in_z_direction(self, atom : Atom):
         return not (atom.z >= self.Nz or atom.z < 0)
     def check_in_x_direction(self, atom : Atom):
@@ -138,21 +162,26 @@ class UnitCell:
             sublattice = UnitCell._sublattice(atom)
             self.neighbors[atom] = []
             self.danglingBonds[atom] = []
-            for delta in UnitCell.raw_deltas[sublattice]:
+            for delta in self.raw_deltas[sublattice]:
                 neighbor = atom.add(delta)
                 # Ignore dangling bonds in X direction
-                if not self.check_in_y_direction(neighbor) or not self.check_in_z_direction(neighbor):
-                    self.danglingBonds[atom].append((neighbor, UnitCell.determine_hybridization(delta)))
-                elif self.check_in_x_direction(neighbor):
-                    # Only add as neighbor if inside cell in all directions
-                    if neighbor in atom_set:
-                        l, m, n = UnitCell.directionalCosine(delta)
-                        self.neighbors[atom].append((neighbor, delta, l, m, n))
+
+                if self.equilibrium_GF:
+                    if not self.check_in_y_direction(neighbor) or not self.check_in_z_direction(neighbor) or not self.check_in_x_direction(neighbor):
+                        self.danglingBonds[atom].append((neighbor, UnitCell.determine_hybridization(delta)))                    
+                else:
+                    if not self.check_in_y_direction(neighbor) or not self.check_in_z_direction(neighbor):
+                        self.danglingBonds[atom].append((neighbor, UnitCell.determine_hybridization(delta)))   
+                    elif self.check_in_x_direction(neighbor):
+                        # Only add as neighbor if inside cell in all directions
+                        if neighbor in atom_set:
+                            l, m, n = UnitCell.directionalCosine(delta)
+                            self.neighbors[atom].append((neighbor, delta, l, m, n))
                     
     def get_neighbors(self, atom: Atom):
         """Return a list of neighboring Atom objects using raw_deltas and sublattice."""
         sublattice = UnitCell._sublattice(atom)
-        deltas = UnitCell.raw_deltas[sublattice]
+        deltas = self.raw_deltas[sublattice]
         neighbors = [atom.add(delta) for delta in deltas]
         return neighbors
         

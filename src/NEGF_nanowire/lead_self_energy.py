@@ -293,11 +293,11 @@ class LeadSelfEnergy():
             self_energy = H10 @ G_surface @ H01
             # Extract top-left block (coupling to first supercell)
             device_size = 2 * 10* self.ham.Nz * self.ham.Ny  # 4 layers × Nz × 2 atoms × 10 orbitals
-            return self_energy[:device_size, :device_size]
+            return self_energy[:device_size,:device_size]
         else:  # right
             # For symmetric leads at zero bias, use same formula but extract different block
             # This ensures the physics is symmetric
-            self_energy = H10 @ G_surface @ H01  # Same as left!
+            self_energy = H01 @ G_surface @ H10  # Same as left!
             # Extract bottom-right block (coupling to second supercell)
             device_size = 2 * 10* self.ham.Nz * self.ham.Ny
-            return self_energy[:device_size, :device_size]
+            return self_energy[-device_size:,-device_size:]

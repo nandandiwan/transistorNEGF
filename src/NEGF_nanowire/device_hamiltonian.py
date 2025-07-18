@@ -115,7 +115,7 @@ class Hamiltonian:
         if side == 'left':
             orientation = (0, 1, 2, 3)  # Always use same orientation
         elif side == "right":
-            orientation = (0,1,2,3)#(3, 2, 1, 0)#tuple([(self.layer_right_lead + i) % 4 for i in range(1, 5)])
+            orientation = (3, 2, 1, 0)
         
         # Create 8-layer system: two adjacent 4-layer supercells
         # This allows us to extract H01 as coupling between supercells
@@ -193,10 +193,10 @@ class Hamiltonian:
             base = atom_idx * numOrbitals
             for i in range(4):
                 for j in range(i, 4):
-                    add(base + i, base + j, onsiteMatrix[i, j] + potentialPerAtom[atom_idx] * (i == j))
+                    add(base + i, base + j, onsiteMatrix[i, j]) #+ potentialPerAtom[atom_idx] * (i == j))
             for p in range(4, 9):
-                add(base + p, base + p, TBP.E['dxy'] + potentialPerAtom[atom_idx])
-            add(base + 9, base + 9, TBP.E['s*'] + potentialPerAtom[atom_idx])
+                add(base + p, base + p, TBP.E['dxy'])# + potentialPerAtom[atom_idx])
+            add(base + 9, base + 9, TBP.E['s*']) #+ potentialPerAtom[atom_idx])
 
         # Hopping terms
         for atom_idx, atom in indexToAtom.items():
@@ -205,10 +205,10 @@ class Hamiltonian:
                 j = atomToIndex[atom2]
                 if j < atom_idx:
                     continue  # Only fill upper triangle, Hermitian fill handles the rest
-                phase = np.exp(2j * np.pi * (0 * delta[1]))
+      
                 for o1, orb1 in enumerate(orbitals):
                     for o2, orb2 in enumerate(orbitals):
-                        hop = TBP.SK[(orb1, orb2)](l, m, n, TBP.V) * phase
+                        hop = TBP.SK[(orb1, orb2)](l, m, n, TBP.V) 
                         add(base_i + o1, j * numOrbitals + o2, hop)
 
         H = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsc()
