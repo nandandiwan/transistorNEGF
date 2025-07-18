@@ -168,7 +168,11 @@ class UnitCell:
 
                 if self.equilibrium_GF:
                     if not self.check_in_y_direction(neighbor) or not self.check_in_z_direction(neighbor) or not self.check_in_x_direction(neighbor):
-                        self.danglingBonds[atom].append((neighbor, UnitCell.determine_hybridization(delta)))                    
+                        self.danglingBonds[atom].append((neighbor, UnitCell.determine_hybridization(delta)))         
+                    else:
+                        if neighbor in atom_set:
+                            l, m, n = UnitCell.directionalCosine(delta)
+                            self.neighbors[atom].append((neighbor, delta, l, m, n))           
                 else:
                     if not self.check_in_y_direction(neighbor) or not self.check_in_z_direction(neighbor):
                         self.danglingBonds[atom].append((neighbor, UnitCell.determine_hybridization(delta)))   

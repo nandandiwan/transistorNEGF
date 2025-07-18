@@ -178,7 +178,7 @@ class Charge():
         return 1.2
     
     def calculate_DOS(self, energy_range=None, method="sancho_rubio", 
-                     eta=1e-6, save_data=True, filename="dos_data.txt"):
+                     eta=1e-6, save_data=True, filename="dos_data.txt", equilibrium=False):
         """
         Calculate Density of States (DOS) using RGF with multiprocessing.
         
@@ -208,7 +208,7 @@ class Charge():
         # Use multiprocessing to calculate DOS points
         with multiprocessing.Pool(processes=32) as pool:
             total_dos = pool.map(self._calculate_dos_point_mp, 
-                                 [(e, method, eta) for e in param_grid])
+                                 [(e, method, eta, equilibrium) for e in param_grid])
         
         end_time = time.time()
         print(f"DOS calculation completed in {end_time - start_time:.2f} seconds")
@@ -222,7 +222,7 @@ class Charge():
         
         return energy_range, total_dos
     
-    def _calculate_dos_point(self, energy, method="sancho_rubio", eta=1e-6):
+    def _calculate_dos_point(self, energy, method="sancho_rubio", eta=1e-6, equilibrium=False):
         """
         Calculate DOS at a single E point using RGF Green's functions.
         
@@ -236,7 +236,7 @@ class Charge():
         """
         try:
             # Use RGF to compute DOS directly
-            dos_array = self.GF.compute_density_of_states(energy, self_energy_method=method)
+            dos_array = self.GF.compute_density_of_states(energy, self_energy_method=method, equilibrium=equilibrium)
             
             # Sum over all orbitals to get total DOS
             total_dos = np.sum(dos_array)
@@ -249,8 +249,8 @@ class Charge():
     
     def _calculate_dos_point_mp(self, params):
         """Multiprocessing helper for DOS calculation"""
-        energy, method, eta = params
-        return self._calculate_dos_point(energy,method, eta)
+        energy, method, eta, equilibrium = params
+        return self._calculate_dos_point(energy,method, eta,equilibrium)
     
     def calculate_electron_density_at_energy(self, energy, method="sancho_rubio"):
         """

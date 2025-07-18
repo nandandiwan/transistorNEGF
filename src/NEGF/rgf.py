@@ -46,7 +46,7 @@ class GreensFunction:
         self.lead_self_energy = LeadSelfEnergy(device, hamiltonian)
         self.self_energy_method = self_energy_method
         # Numerical parameters
-        self.eta = 1e-6  # Small imaginary part for numerical stability
+        self.eta = 1e-5  # Small imaginary part for numerical stability
         self.sparse_threshold = 0.1  # Use sparse solver if density < threshold
         
     def fermi_distribution(self, E, mu, kT):

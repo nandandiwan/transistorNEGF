@@ -250,7 +250,7 @@ class LeadSelfEnergy():
         except linalg.LinAlgError:
             return linalg.pinv(final_matrix)
     
-    def self_energy(self, side, E, method="iterative"):
+    def self_energy(self, side, E, method="sancho_rubio"):
         """
         Calculate lead self-energy using surface Green's functions.
         

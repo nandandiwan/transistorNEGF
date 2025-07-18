@@ -206,11 +206,11 @@ class GreensFunction:
         G_lesser_diag = np.concatenate([np.diag(block) for block in G_lesser])
         return G_R_diag, G_lesser_diag, Gamma_L, Gamma_R
     
-    # --- The _sparse_matrix_inverse method is no longer needed and has been removed ---
 
-    def compute_density_of_states(self, E, self_energy_method=None, equilibrium=False):
+
+    def compute_density_of_states(self, E, self_energy_method=None, use_rgf=True, equilibrium=False):
         G_R_diag, _, _ = self.compute_central_greens_function(
-            E, compute_lesser=False, use_rgf=True,
+            E, compute_lesser=False, use_rgf=use_rgf,
             self_energy_method=self_energy_method, equilibrium=equilibrium
         )
         dos = -np.imag(G_R_diag) / np.pi
