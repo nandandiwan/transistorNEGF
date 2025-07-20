@@ -250,52 +250,40 @@ class LeadSelfEnergy():
     
     def self_energy(self, side, E, method="sancho_rubio"):
         """
-        Calculate lead self-energy using surface Green's functions.
-        
+        Calculate lead self-energy using surface Green's functions for general device types.
         Args:
             side: "left" or "right" lead
             E: Energy
-
             method: Surface GF method ("sancho_rubio", "iterative", "transfer")
-            
         Returns:
             Self-energy matrix
         """
-        # Get lead Hamiltonian matrices
-        H00, H01, H10 = self.ham.get_H00_H01_H10(self.ham.t, self.ham.o)
-        
+        # Get lead Hamiltonian matrices for the device type
+        H00, H01, H10 = self.ham.get_H00_H01_H10()
+
         # Handle large energies
         if np.abs(E) > 5e5:
             return np.zeros((H00.shape[0], H00.shape[0]), dtype=complex)
-        
+
         # Apply bias voltage
         if side == "left":
             E_lead = E - self.ham.Vs
         else:  # right
             E_lead = E - self.ham.Vd
-        
+
         # Calculate surface Green's function
         try:
             G_surface = self.surface_greens_function(E_lead, H00, H01, method=method)
         except Exception as e:
             print(f"Warning: Surface GF calculation failed for {side} lead: {e}")
-            # Fallback to simple approximation
             n = H00.shape[0]
-            eta = 1e-3  # Larger eta for stability
+            eta = 1e-3
             G_surface = linalg.pinv(self._add_eta(E_lead) * np.eye(n) - H00)
-        
-        # Calculate self-energy - use same formula for both leads at zero bias
-        # For symmetric leads, both should use the same computation
+
+        # Calculate self-energy
         if side == "left":
-            # Self-energy: Σ_L = H10 @ G_surface @ H01
             self_energy = H10 @ G_surface @ H01
-            # # Extract top-left block (coupling to first supercell)
-            # device_size = 4 * self.ham.Nz * 2 * 10  # 4 layers × Nz × 2 atoms × 10 orbitals
-            return self_energy#[:device_size, :device_size]
-        else:  # right
-            # For symmetric leads at zero bias, use same formula but extract different block
-            # This ensures the physics is symmetric
-            self_energy = H01 @ G_surface @ H10  # Same as left!
-            # # Extract bottom-right block (coupling to second supercell)
-            # device_size = 4 * self.ham.Nz * 2 * 10
-            return self_energy#[-device_size:, -device_size:]
+            return self_energy
+        else:
+            self_energy = H01 @ G_surface @ H10
+            return self_energy
