@@ -62,14 +62,16 @@ class UnitCell:
     @staticmethod
     def determine_hybridization(delta):
         sign_pattern = np.sign(delta)
-        if np.array_equal(sign_pattern, [1, 1, 1]):       # Type a
+        if np.array_equal(sign_pattern, [1, 1, 1]) or np.array_equal(sign_pattern, [-1, -1, -1]):       # Type a
             return 0
-        elif np.array_equal(sign_pattern, [1, -1, -1]):   # Type b
+        elif np.array_equal(sign_pattern, [1, -1, -1]) or np.array_equal(sign_pattern, [-1, 1, 1]):   # Type b
             return 1
-        elif np.array_equal(sign_pattern, [-1, 1, -1]):   # Type c
+        elif np.array_equal(sign_pattern, [-1, 1, -1]) or np.array_equal(sign_pattern, [1, -1, 1]):   # Type c
             return 2
-        elif np.array_equal(sign_pattern, [-1, -1, 1]):   # Type d
+        elif np.array_equal(sign_pattern, [-1, -1, 1]) or np.array_equal(sign_pattern, [1, 1, -1]):   # Type d
             return 3
+        else:
+            raise Exception("error in hybridization")
     
     def __init__(self, vertical_blocks : int, channel_blocks : int, orientiation = (0,1,2,3), not_NEGF = False):
         self.Nz = vertical_blocks

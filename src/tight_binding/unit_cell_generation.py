@@ -163,18 +163,17 @@ class UnitCell:
             return not (newAtom.z < 0 or newAtom.z > (self.layers - 1)  * 0.25)
     
     def determine_hybridization(delta):
-        # Extract just the signs
         sign_pattern = np.sign(delta)
-        
-        # Map each sign pattern to its hybridization index
-        if np.array_equal(sign_pattern, [1, 1, 1]):       # Type a
+        if np.array_equal(sign_pattern, [1, 1, 1]) or np.array_equal(sign_pattern, [-1, -1, -1]):       # Type a
             return 0
-        elif np.array_equal(sign_pattern, [1, -1, -1]):   # Type b
+        elif np.array_equal(sign_pattern, [1, -1, -1]) or np.array_equal(sign_pattern, [-1, 1, 1]):   # Type b
             return 1
-        elif np.array_equal(sign_pattern, [-1, 1, -1]):   # Type c
+        elif np.array_equal(sign_pattern, [-1, 1, -1]) or np.array_equal(sign_pattern, [1, -1, 1]):   # Type c
             return 2
-        elif np.array_equal(sign_pattern, [-1, -1, 1]):   # Type d
+        elif np.array_equal(sign_pattern, [-1, -1, 1]) or np.array_equal(sign_pattern, [1, 1, -1]):   # Type d
             return 3
+        else:
+            raise Exception("error in hybridization")
     def mapNeighbors(self):
         """This gives the list of neighbors of an atom
         For example say i am working with atom at 0.25,.25,.25. I find the sublattice and then the neighbors.

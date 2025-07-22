@@ -82,7 +82,7 @@ class GreensFunction:
         Sigma_R_full[-block_size:, -block_size:] = sigma_R
         Sigma_L_full = Sigma_L_full.tocsc()
         Sigma_R_full = Sigma_R_full.tocsc()
-
+        
         H_eff = H + Sigma_L_full + Sigma_R_full
         A = E * sp.identity(n, dtype=complex, format='csc') - H_eff
 

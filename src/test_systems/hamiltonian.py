@@ -8,13 +8,13 @@ class Hamiltonian:
     def __init__(self, name):
         self.name = name
         self.t = 1   # Hopping energy
-        self.o = 0   # Base on-site energy
+        self.o = 0.0   # Base on-site energy
         self.Vs = 0  # Source voltage
         self.Vd = 0  # Drain voltage
         self.Vg = 0  # Gate voltage applied to the device region
 
         self.N = 10
-        # QPC dimensions
+       
         self.W = 5   # Width of the QPC
         self.L = 10  # Length of the QPC
         
@@ -34,12 +34,25 @@ class Hamiltonian:
                     A[i + 1, i] = t
                 A[i, i] = o
             return sp.csc_matrix(A) 
+        
+    def modified_one_d_wire(self, blocks=True):
+        t, o, N = self.t, self.o, self.N
+        if blocks:
+            return ([sp.eye(1) * o] * N), ([sp.eye(1) * t] * (N - 1))
+        else:
+            A = np.zeros((N, N))
+            for i in range(N):
+                if i < N - 1:
+                    A[i, i + 1] = t
+                    A[i + 1, i] = t
+                A[i, i] = o
+            return sp.csc_matrix(A) 
     def create_1d_hamiltonian(self, t, o, N, blocks=True):
         """Return blocks or full matrix for 1D wire."""
         if blocks:
             return ([sp.eye(1) * o] * N), ([sp.eye(1) * t] * (N - 1))
         else:
-            A = np.zeros((N, N))
+            A = np.zeros((N, N), dtype=complex)
             for i in range(N):
                 if i < N - 1:
                     A[i, i + 1] = t
@@ -59,55 +72,59 @@ class Hamiltonian:
         """
         W, L, t, o = self.W, self.L, self.t, self.o
         N = W * L
-
-        # --- Define the QPC potential geometry ---
-        # Center of the channel in the transverse direction
-        y_center = (W - 1) / 2.0
-        
-        sigma_y = W / 4.0 
-        
         V_barrier = self.Vg
 
-        U = np.zeros((L, W))
-        for l in range(L):     
-            for w in range(W): 
-                y_coord = w
-                U[l, w] = V_barrier * np.exp(-(y_coord - y_center)**2 / (2 * sigma_y**2))
 
-        total_onsite_potential = o + U
+
+
+        
         if blocks:
+            total_onsite_potential = np.zeros((W, W), dtype=float)
+            for w in range(W):
+                if w < 1 * L // 3:
+                    total_onsite_potential[w,w] = V_barrier
+                if w > 2 * L // 3:
+                    total_onsite_potential[w,w] = V_barrier
             onsite_blocks = []
             
             for l in range(L):
-                h_ii = np.zeros((W, W), dtype=float)
+                h_ii = np.zeros((W, W),  dtype=complex)
                 for w in range(W):
-
-                    h_ii[w, w] = total_onsite_potential[l, w]
+                    h_ii[w, w] = o
                     if w < W - 1:
                         h_ii[w, w + 1] = t
                         h_ii[w + 1, w] = t
+                h_ii += total_onsite_potential
                 onsite_blocks.append(sp.csc_matrix(h_ii))
 
-            hopping_blocks = [sp.eye(W, k=1)*t for i in range(L)]
+            hopping_blocks = [sp.eye(W, k=0)*t for i in range(L)]
             
             return onsite_blocks, hopping_blocks
         else:
-            # --- Full matrix representation for direct inversion ---
-            A = np.zeros((N, N), dtype=float)
+            total_onsite_potential = np.zeros((W, L), dtype=float)
+            # Set the top third of the width (w < W // 3) to Vg
             for l in range(L):
                 for w in range(W):
-                    idx =(int) (l * W + w)
+                    if w < W // 3:
+                        total_onsite_potential[w, l] = V_barrier
+                    if w > 2*W // 3:
+                        total_onsite_potential[w, l] = V_barrier
+            # --- Full matrix representation for direct inversion ---
+            A = np.zeros((N, N), dtype=complex)
+            for l in range(L):
+                for w in range(W):
+                    idx = l * W + w
                     # On-site energy from the saddle-point potential
-                    
-                    A[int(idx), int(idx)] = total_onsite_potential[l, w]
-                    
+                    A[idx, idx] = o + total_onsite_potential[w, l]
                     # Hopping in width (transverse)
                     if w < W - 1:
                         A[idx, idx + 1] = t
                         A[idx + 1, idx] = t
-                        
-     
-                        
+                    # Hopping in length (longitudinal)
+                    if l < L - 1:
+                        idx_next = (l + 1) * W + w
+                        A[idx, idx_next] = t
+                        A[idx_next, idx] = t
             return sp.csc_matrix(A)
 
     def create_hamiltonian(self, blocks=True):
@@ -139,7 +156,7 @@ class Hamiltonian:
             H00 = self.create_1d_hamiltonian(self.t, self.o, self.W, blocks=False)
             
             # The coupling between principal layers in the lead.
-            H01 = sp.eye(self.W, format='csc',k=1) * self.t
+            H01 = sp.eye(self.W, format='csc', dtype=complex) * self.t
             H10 = H01.T # Assuming real hopping t
             
             return H00, H01, H10

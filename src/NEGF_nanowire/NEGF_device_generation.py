@@ -189,4 +189,60 @@ class UnitCell:
         neighbors = [atom.add(delta) for delta in deltas]
         return neighbors
         
+class PeriodicUnitCell(UnitCell):
+    """
+    A UnitCell that implements periodic boundary conditions in the X-direction
+    (transport direction) and treats Y and Z as finite with dangling bonds.
+
+    This class is intended for generating the lead Hamiltonians (H00 and H01).
+    """
+    def __init__(self, channel_length: float, channel_width: float, channel_thickness: float, orientation=(0, 1, 2, 3)):
+        # This dictionary will store the connections that cross the periodic boundary.
+        # Key: atom in the cell, Value: list of (neighbor_in_next_cell, delta, l, m, n)
+        self.periodic_neighbors = {}
         
+        # Call the parent class's __init__ method.
+        # We pass equilibrium_GF=False because we are manually handling all boundary logic here.
+        super().__init__(channel_length, channel_width, channel_thickness, orientation, equilibrium_GF=False)
+
+    def map_neighbors_and_dangling_bonds(self):
+        """
+        Overrides the parent method to implement periodic boundary conditions in X.
+
+        - Populates self.neighbors for connections within the cell.
+        - Populates self.periodic_neighbors for connections crossing the X-boundary.
+        - Populates self.danglingBonds for connections crossing the Y/Z boundaries.
+        """
+        # Reset all neighbor dictionaries
+        self.neighbors = {}
+        self.danglingBonds = {}
+        self.periodic_neighbors = {}
+        
+        atom_set = set(self.ATOM_POSITIONS)
+
+        for atom in self.ATOM_POSITIONS:
+            # Initialize lists for the current atom
+            self.neighbors[atom] = []
+            self.danglingBonds[atom] = []
+            self.periodic_neighbors[atom] = []
+            
+            sublattice = self._sublattice(atom)
+            
+            for delta in self.raw_deltas[sublattice]:
+                neighbor = atom.add(delta)
+
+                # Case 1: The neighbor is a dangling bond on the Y or Z surface.
+                if not self.check_in_y_direction(neighbor) or not self.check_in_z_direction(neighbor):
+                    self.danglingBonds[atom].append((neighbor, self.determine_hybridization(delta)))
+                
+                # Case 2: The neighbor is inside the cell's X, Y, and Z bounds.
+                elif self.check_in_x_direction(neighbor):
+                    if neighbor in atom_set:
+                        l, m, n = self.directionalCosine(delta)
+                        self.neighbors[atom].append((neighbor, delta, l, m, n))
+                
+                # Case 3: The neighbor is outside the X-boundary (a periodic connection).
+                else:
+                    l, m, n = self.directionalCosine(delta)
+                    # This neighbor connects to the next/previous unit cell.
+                    self.periodic_neighbors[atom].append((neighbor, delta, l, m, n))
