@@ -74,31 +74,31 @@ class Hamiltonian:
         H10 = H01.conj().T
         
 
-        # newUnitCell = UnitCell(channel_length=2 * 0.5431e-9,channel_width=self.device.channel_width,channel_thickness=self.device.channel_thickness, orientation=orientation)
-        # HT = self.create_sparse_channel_hamlitonian(unitCell=newUnitCell, blocks=False)
+        newUnitCell = UnitCell(channel_length=2 * 0.5431e-9,channel_width=self.device.channel_width,channel_thickness=self.device.channel_thickness, orientation=orientation)
+        HT = self.create_sparse_channel_hamlitonian(unitCell=newUnitCell, blocks=False)
         
-        # # Calculate proper block size: 8 atoms per block * total blocks perpendicular ot transport
-        # block_size = self.Nz * self.Ny * 4 * 10 * 2
+        # Calculate proper block size: 8 atoms per block * total blocks perpendicular ot transport
+        block_size = self.Nz * self.Ny * 4 * 10 * 2
         
         
-        # # H01: coupling from current unit cell to next unit cell  
-        # H01 = HT[:block_size, block_size:2*block_size]
+        # H01: coupling from current unit cell to next unit cell  
+        H01 = HT[:block_size, block_size:2*block_size]
         
-        # # H10: coupling from next unit cell to current unit cell (should be H01†)
-        # H10 = HT[block_size:2*block_size, :block_size]
+        # H10: coupling from next unit cell to current unit cell (should be H01†)
+        H10 = HT[block_size:2*block_size, :block_size]
         
-        # # Verify Hermitian relationship: H10 should equal H01†
-        # if not sparse:
-        #     H00_dense = H00.toarray() if hasattr(H00, 'toarray') else H00
-        #     H01_dense = H01.toarray() if hasattr(H01, 'toarray') else H01
-        #     H10_dense = H10.toarray() if hasattr(H10, 'toarray') else H10
+        # Verify Hermitian relationship: H10 should equal H01†
+        if not sparse:
+            H00_dense = H00.toarray() if hasattr(H00, 'toarray') else H00
+            H01_dense = H01.toarray() if hasattr(H01, 'toarray') else H01
+            H10_dense = H10.toarray() if hasattr(H10, 'toarray') else H10
             
-        #     # Check if H10 ≈ H01†
-        #     diff = np.max(np.abs(H10_dense - H01_dense.conj().T))
-        #     if diff > 1e-12:
-        #         print(f"Warning: H10 != H01† for {side} lead, difference: {diff:.2e}")
+            # Check if H10 ≈ H01†
+            diff = np.max(np.abs(H10_dense - H01_dense.conj().T))
+            if diff > 1e-12:
+                print(f"Warning: H10 != H01† for {side} lead, difference: {diff:.2e}")
             
-        #     return H00_dense, H01_dense, H10_dense
+            return H00_dense, H01_dense, H10_dense
             
         return H00, H01, H10
     

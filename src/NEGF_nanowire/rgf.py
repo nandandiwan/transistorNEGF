@@ -135,6 +135,8 @@ class GreensFunction:
 
         sigma_L = self.lead_self_energy.self_energy("left", E, self_energy_method)
         sigma_R = self.lead_self_energy.self_energy("right", E, self_energy_method)
+        
+        sigma_L = sigma_R
         if equilibrium:
             sigma_L *= 0
             sigma_R *= 0

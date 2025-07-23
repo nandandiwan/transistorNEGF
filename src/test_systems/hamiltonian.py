@@ -1,6 +1,6 @@
 import numpy as np
 import scipy.sparse as sp
-
+from unit_cell_generation import GrapeheneZigZagCell
 class Hamiltonian:
     """
     Constructs tight-binding Hamiltonians for various device structures.
@@ -20,6 +20,13 @@ class Hamiltonian:
         
         # Physical constants
         self.kbT_eV = 8.617333e-5 # Boltzmann constant in eV/K
+        
+        # for unit cell hamiltonians
+        self.unit_cell = None
+        
+        #zig zag
+        self.Nx = 10
+        self.Ny = 5
 
     def one_d_wire(self, blocks=True):
         """Return blocks or full matrix for 1D wire."""
@@ -126,11 +133,82 @@ class Hamiltonian:
                         A[idx, idx_next] = t
                         A[idx_next, idx] = t
             return sp.csc_matrix(A)
+    
+    def zig_zag_hamiltonian(self, t=-1.0, onsite_potential=0.0):
+        """
+        Builds the full tight-binding Hamiltonian for the nanoribbon structure.
+
+        Args:
+            t (float): The nearest-neighbor hopping parameter.
+            onsite_potential (float): The on-site energy for all atoms.
+
+        Returns:
+            scipy.sparse.csr_matrix: The full Hamiltonian matrix.
+        """
+        if self.unit_cell is None:
+            self.unit_cell=  GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny)
+        unitCell = self.unit_cell        
+        
+        num_atoms_total = len(unitCell.structure)
+        num_atoms_layer = len(unitCell.layer)
+        
+        # Create a mapping from atom object to its index in the full structure list
+        atom_to_idx = {atom: i for i, atom in enumerate(unitCell.structure)}
+        
+        # --- 1. Build the Onsite Block (H0) ---
+        # Describes connections within one layer (unit cell)
+        H0 = np.zeros((num_atoms_layer, num_atoms_layer))
+        
+        # Create a mapping for just the first layer
+        layer_atom_to_idx = {atom: i for i, atom in enumerate(unitCell.layer)}
+        
+        for i, atom in enumerate(unitCell.layer):
+            H0[i, i] = onsite_potential
+            # Find neighbors that are also in the first layer
+            for neighbor, delta, l, m, n in unitCell.neighbors[atom]:
+                if neighbor in layer_atom_to_idx:
+                    j = layer_atom_to_idx[neighbor]
+                    H0[i, j] = t
+
+        # --- 2. Build the Interaction Block (H1) ---
+        # Describes connections between layer 0 and layer 1
+        H1 = np.zeros((num_atoms_layer, num_atoms_layer))
+        
+        # Find neighbors of atoms in layer 0 that are in layer 1
+        layer_1_atoms = set(unitCell.structure[num_atoms_layer : 2 * num_atoms_layer])
+
+        for i, atom_in_layer0 in enumerate(unitCell.layer):
+            for neighbor, delta, l, m, n in unitCell.neighbors[atom_in_layer0]:
+                
+                if neighbor in layer_1_atoms:
+                    #print(neighbor)
+                    
+                    # Find the corresponding atom in layer 0 by shifting it back
+                    # This assumes your structure is perfectly periodic
+                    shifted_neighbor_pos = (neighbor.x - (unitCell.sin60 * 2), neighbor.y, neighbor.z)
+                    
+                    # You need to handle potential floating point issues here
+                    # A better way would be to create a robust mapping
+                    for atom_in_l0, idx in layer_atom_to_idx.items():
+                        if np.allclose(atom_in_l0.pos(), shifted_neighbor_pos, atol=1e-5):
+                            j = idx
+                            H1[i, j] = t
+                            break
+        H0_sparse = sp.csr_matrix(H0)
+        H1_sparse = sp.csr_matrix(H1)
+        
+        # Create a list of the diagonal blocks (all H0)
+        diagonal_blocks = [H0_sparse] * unitCell.num_layers_x
+        off_diagonal_blocks = [H1_sparse] * (unitCell.num_layers_x -1)
+        return diagonal_blocks, off_diagonal_blocks
+        
 
     def create_hamiltonian(self, blocks=True):
         """
         General interface to get the Hamiltonian for the specified device type.
         """
+        if self.name == "zigzag":
+            return self.zig_zag_hamiltonian()
         if self.name ==  "one_d_wire":
             return self.one_d_wire(blocks=blocks)
         if self.name == "quantum_point_contact" or self.name == "qpc":
@@ -160,5 +238,13 @@ class Hamiltonian:
             H10 = H01.T # Assuming real hopping t
             
             return H00, H01, H10
+        
+        if self.name == "zigzag":
+            diag, offdiag = self.create_hamiltonian(True)
+            H00 = diag[0]
+            H01 = offdiag[0]
+            H10 = H01.T
+            return H00, H01, H10
+            
         else:
             raise ValueError(f"Lead definition not found for device: {self.name}")
