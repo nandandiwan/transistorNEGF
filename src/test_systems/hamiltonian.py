@@ -9,11 +9,11 @@ class Hamiltonian:
         self.name = name
         self.t = 1   # Hopping energy
         self.o = 0.0   # Base on-site energy
-        self.Vs = 0  # Source voltage
-        self.Vd = 0  # Drain voltage
+        self.Vs = 0.0  # Source voltage
+        self.Vd = 0.0  # Drain voltage
         self.Vg = 0  # Gate voltage applied to the device region
 
-        self.N = 10
+        self.N = 120
        
         self.W = 5   # Width of the QPC
         self.L = 10  # Length of the QPC
@@ -27,6 +27,9 @@ class Hamiltonian:
         #zig zag
         self.Nx = 10
         self.Ny = 5
+        
+        #modified oned
+        
 
     def one_d_wire(self, blocks=True):
         """Return blocks or full matrix for 1D wire."""
@@ -45,7 +48,11 @@ class Hamiltonian:
     def modified_one_d_wire(self, blocks=True):
         t, o, N = self.t, self.o, self.N
         if blocks:
-            return ([sp.eye(1) * o] * N), ([sp.eye(1) * t] * (N - 1))
+            diag, offdiag =  ([sp.eye(1) * o] * N), ([sp.eye(1) * t] * (N - 1))
+            diag[N//2] += sp.eye(1) * 5
+            #diag[N//2 + 1] += sp.eye(1) * 5
+            return diag, offdiag
+            
         else:
             A = np.zeros((N, N))
             for i in range(N):
@@ -53,6 +60,9 @@ class Hamiltonian:
                     A[i, i + 1] = t
                     A[i + 1, i] = t
                 A[i, i] = o
+                
+            A[N//2, N//2] = 5
+            #A[N//2+1, N//2+1] = 5
             return sp.csc_matrix(A) 
     def create_1d_hamiltonian(self, t, o, N, blocks=True):
         """Return blocks or full matrix for 1D wire."""
@@ -213,6 +223,8 @@ class Hamiltonian:
             return self.one_d_wire(blocks=blocks)
         if self.name == "quantum_point_contact" or self.name == "qpc":
             return self.quantum_point_contact(blocks=blocks)
+        if self.name == "modified_one_d":
+            return self.modified_one_d_wire(blocks)
         else:
             # You can add other device types like "one_d_wire" here.
             raise ValueError(f"Unknown device type: {self.name}")
@@ -222,15 +234,16 @@ class Hamiltonian:
         Get the principal layer Hamiltonian (H00) and coupling matrices (H01, H10)
         for the semi-infinite leads.
         """
-        if self.name == "one_d_wire" or self.name == "chain":
-
+        
+        if self.name == "one_d_wire" or self.name == "chain" or self.name =="modified_one_d":
+            
             H00 = sp.eye(1) * self.o
             H01 = sp.eye(1) * self.t
             H10 = sp.eye(1) * self.t
 
             return H00, H01, H10 
         if self.name == "quantum_point_contact" or self.name == "qpc":
-
+            
             H00 = self.create_1d_hamiltonian(self.t, self.o, self.W, blocks=False)
             
             # The coupling between principal layers in the lead.
