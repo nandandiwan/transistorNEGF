@@ -248,7 +248,7 @@ class LeadSelfEnergy():
         except linalg.LinAlgError:
             return linalg.pinv(final_matrix)
     
-    def self_energy(self, side, E, method="sancho_rubio"):
+    def self_energy(self, side, E, ky=0, method="sancho_rubio"):
         """
         Calculate lead self-energy using surface Green's functions for general device types.
         Args:
@@ -259,8 +259,12 @@ class LeadSelfEnergy():
             Self-energy matrix
         """
         # Get lead Hamiltonian matrices for the device type
-        H00, H01, H10 = self.ham.get_H00_H01_H10()
-
+        H00, H01, H10 = self.ham.get_H00_H01_H10(ky=ky)
+        # print(H00.toarray())
+        # print("=============")
+        # print(H01.toarray())
+        # print("=============")
+        # print(H10.toarray())
         # Handle large energies
         if np.abs(E) > 5e5:
             return np.zeros((H00.shape[0], H00.shape[0]), dtype=complex)

@@ -1,5 +1,14 @@
-# greens_function.py
 
+import os
+import time
+
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+from itertools import product
+import multiprocessing
 import numpy as np
 import scipy.sparse as sp
 from scipy.linalg import inv # Keep for reference, but smart_inverse is used
@@ -22,9 +31,15 @@ class GreensFunction:
         """
         
         self.ham = hamiltonian
+        
+        if (self.ham.periodic):
+            self.k_space = np.linspace(0,1,32)
+        else:
+            self.k_space = np.array([0])
         self.lead_self_energy = LeadSelfEnergy(hamiltonian)
         self.self_energy_method = self_energy_method
         self.eta = 1e-6
+        self.energy_grid = np.linspace(-5,5,100)
         # The sparse_threshold is now handled by the smart_inverse function
         # self.sparse_threshold = 0.1
 
@@ -40,7 +55,7 @@ class GreensFunction:
             return E
         return E + 1j * self.eta
 
-    def compute_central_greens_function(self, E, compute_lesser=True,
+    def compute_central_greens_function(self, E, ky=0,compute_lesser=True,
                                         use_rgf=True, self_energy_method=None, equilibrium=False):
         """
         Compute central region Green's function.
@@ -51,11 +66,11 @@ class GreensFunction:
             self_energy_method = self.self_energy_method
 
         if use_rgf:
-            return self._compute_rgf_greens_function(E, compute_lesser, self_energy_method, equilibrium=equilibrium)
+            return self._compute_rgf_greens_function(E, ky,compute_lesser, self_energy_method, equilibrium=equilibrium)
         else:
-            return self._compute_direct_greens_function(E, compute_lesser, self_energy_method, equilibrium=equilibrium)
+            return self._compute_direct_greens_function(E, ky,compute_lesser, self_energy_method, equilibrium=equilibrium)
 
-    def _compute_direct_greens_function(self, E, compute_lesser, self_energy_method, equilibrium=False):
+    def _compute_direct_greens_function(self, E, ky,compute_lesser, self_energy_method, equilibrium=False):
         """
         Direct matrix inversion for smaller systems using the smart_inverse utility.
         Uses general Hamiltonian.create_hamiltonian interface.
@@ -64,11 +79,12 @@ class GreensFunction:
             raise ValueError("Cannot compute lesser Green's function in equilibrium.")
 
         # Get full device Hamiltonian for current type
-        H = self.ham.create_hamiltonian(blocks=False)
+        
+        H = self.ham.create_hamiltonian(blocks=False, ky=ky)
         n = H.shape[0]
-
-        sigma_L = self.lead_self_energy.self_energy("left", E, self_energy_method)
-        sigma_R = self.lead_self_energy.self_energy("right", E, self_energy_method)
+        E = self.add_eta(E)
+        sigma_L = self.lead_self_energy.self_energy("left", E, ky, self_energy_method)
+        sigma_R = self.lead_self_energy.self_energy("right", E,ky, self_energy_method)
 
         if equilibrium:
             sigma_L *= 0
@@ -112,26 +128,26 @@ class GreensFunction:
 
         return G_R, G_lesser_diag, Gamma_L, Gamma_R
 
-    def _compute_rgf_greens_function(self, E, compute_lesser, self_energy_method, equilibrium=False):
+    def _compute_rgf_greens_function(self, E, ky,compute_lesser, self_energy_method, equilibrium=False):
         """
         Generalized RGF computation using smart_inverse for all block inversions.
         Uses Hamiltonian.create_hamiltonian for block construction.
         """
         if equilibrium and compute_lesser:
             raise ValueError("Cannot compute lesser Green's function in equilibrium.")
-
+        E = self.add_eta(E)
         dagger = lambda A: np.conjugate(A.T)
 
         # Get blocks for current device type
-        H_ii, H_ij = self.ham.create_hamiltonian(blocks=True)
+        H_ii, H_ij = self.ham.create_hamiltonian(blocks=True, ky=ky)
         num_blocks = len(H_ii)
         block_size = H_ii[0].shape[0]
 
         H_ii = [block.toarray() if sp.issparse(block) else block for block in H_ii]
         H_ij = [block.toarray() if sp.issparse(block) else block for block in H_ij]
 
-        sigma_L = self.lead_self_energy.self_energy("left", E, self_energy_method)
-        sigma_R = self.lead_self_energy.self_energy("right", E, self_energy_method)
+        sigma_L = self.lead_self_energy.self_energy("left", E, ky,self_energy_method)
+        sigma_R = self.lead_self_energy.self_energy("right", E, ky,self_energy_method)
         if equilibrium:
             sigma_L *= 0
             sigma_R *= 0
@@ -205,21 +221,70 @@ class GreensFunction:
     
 
 
-    def compute_density_of_states(self, E, self_energy_method=None, use_rgf=True, equilibrium=False):
+    def compute_density_of_states(self, E,ky=0,self_energy_method=None, use_rgf=True, equilibrium=False):
         G_R_diag, _, _ = self.compute_central_greens_function(
-            E, compute_lesser=False, use_rgf=use_rgf,
+            E, ky=ky,compute_lesser=False, use_rgf=use_rgf,
             self_energy_method=self_energy_method, equilibrium=equilibrium
         )
         dos = -np.imag(G_R_diag) / np.pi
         return np.maximum(dos, 0.0)
+    
+    def gf_calculations_k_space(self, E, self_energy_method = "sancho_rubio",use_rgf=True, equilibrium=False) -> list:
+        """Uses multiprocessing to cache GF for E,ky """
+        
+        # Handle both single energy values and lists
+        if np.isscalar(E):
+            E_list = [E]
+        else:
+            E_list = E
+            
+        param_grid = list(product(E_list, self.k_space, [self_energy_method],[use_rgf], [equilibrium]))
 
-    def compute_electron_density(self, E, self_energy_method=None, use_rgf=True):
-        _, G_lesser_diag, _, _ = self.compute_central_greens_function(
-            E, compute_lesser=True, use_rgf=use_rgf,
-            self_energy_method=self_energy_method
+        print(f"Starting DOS calculations for {len(param_grid)} (E, ky) pairs...")
+        print(f"ky range: {self.k_space[0]:.2f} to {self.k_space[-1]:.2f}")
+
+        start_time = time.time()
+
+        with multiprocessing.Pool(processes=32) as pool:
+            results = pool.map(self._calculate_gf_simple, param_grid)
+        end_time = time.time()
+        return results
+    def calculate_DOS(self, self_energy_method = "sancho_rubio",use_rgf=True, equilibrium=False):
+        param_grid = list(product(self.energy_grid, self.k_space, [self_energy_method],[use_rgf], [equilibrium]))
+        start_time = time.time()
+
+        with multiprocessing.Pool(processes=32) as pool:
+            results = pool.map(self._calculate_gf_simple, param_grid)
+        end_time = time.time()
+        
+        # Sort results by (energy, ky) to ensure correct reshape
+        param_grid_sorted = sorted(
+            zip(param_grid, results),
+            key=lambda x: (self.energy_grid.tolist().index(x[0][0]), self.k_space.tolist().index(x[0][1]))
         )
-        density = -np.imag(G_lesser_diag) / (2 * np.pi)
-        return np.maximum(density, 0.0)
+        results_sorted = [r for (_, r) in param_grid_sorted]
+
+        # Each result is a list (G_R_diag), so flatten each and stack
+        results_flat = [np.array(r).flatten() for r in results_sorted]
+        results_matrix = np.array(results_flat).reshape(len(self.energy_grid), len(self.k_space), -1)
+
+        # Compute DOS for each energy by summing over ky and all diagonal elements
+        dos = -np.imag(results_matrix) / np.pi
+
+        dos_sum = np.sum(dos, axis=(1, 2))  # sum over ky and diagonal elements
+        return np.array(dos_sum)
+
+    
+    
+    def _calculate_gf_simple(self, param):
+        """Simple Green's function calculation"""
+        energy, ky, self_energy_method, use_rgf,equilibrium= param
+        G_R_diag, _, _ = self.compute_central_greens_function(
+            energy, ky=ky,compute_lesser=False, use_rgf=use_rgf,
+            self_energy_method=self_energy_method, equilibrium=equilibrium
+        )
+        return G_R_diag
+
     
     def compute_transmission(self, E, self_energy_method=None):
         """
@@ -252,4 +317,4 @@ class GreensFunction:
         """
         # Conductance in units of G0 = 2e^2/h is simply the transmission at the Fermi energy.
         T = self.compute_transmission(E=E_F, self_energy_method=self_energy_method)
-        return T
+        return T    
