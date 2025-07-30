@@ -11,21 +11,23 @@ from itertools import product
 import multiprocessing
 import numpy as np
 import scipy.sparse as sp
-from scipy.linalg import inv # Keep for reference, but smart_inverse is used
+from scipy.linalg import inv 
+import scipy.constants as spc
 import warnings
 
-# Local application imports
-#from device import Device
+
 from hamiltonian import Hamiltonian
 from lead_self_energy import LeadSelfEnergy
-from utils import smart_inverse  # <-- Import your utility function
+from utils import smart_inverse  
+from utils import sparse_diag_product
+
 
 class GreensFunction:
     """
     Recursive Green's Function (RGF) implementation optimized with a smart inversion utility.
     """
 
-    def __init__(self, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio"):
+    def __init__(self, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio", energy_grid = np.linspace(-5,5, 101)):
         """
         Initialize the Green's function calculator.
         """
@@ -39,12 +41,14 @@ class GreensFunction:
         self.lead_self_energy = LeadSelfEnergy(hamiltonian)
         self.self_energy_method = self_energy_method
         self.eta = 1e-6
-        self.energy_grid = np.linspace(-5,5,100)
+        self.energy_grid = energy_grid
+        self.dE = self.energy_grid[1] - self.energy_grid[0]
         # The sparse_threshold is now handled by the smart_inverse function
         # self.sparse_threshold = 0.1
 
-    def fermi_distribution(self, E, mu, kT):
+    def fermi_distribution(self, E, mu):
         """Fermi-Dirac distribution function."""
+        kT = self.ham.kbT_eV
         x = (E - mu) / kT
         with np.errstate(over='ignore'):
             return 1.0 / (1.0 + np.exp(x))
@@ -114,8 +118,8 @@ class GreensFunction:
         if not compute_lesser:
             return G_R, Gamma_L, Gamma_R
 
-        f_L = self.fermi_distribution(np.real(E), self.ham.Vs, self.ham.kbT_eV)
-        f_R = self.fermi_distribution(np.real(E), self.ham.Vd, self.ham.kbT_eV)
+        f_L = self.fermi_distribution(np.real(E), self.ham.Vs)
+        f_R = self.fermi_distribution(np.real(E), self.ham.Vd)
 
         Sigma_lesser = sp.lil_matrix((n, n), dtype=complex)
         Sigma_lesser +=  Gamma_L * f_L
@@ -155,8 +159,8 @@ class GreensFunction:
         Gamma_L = 1j * (sigma_L - dagger(sigma_L))
         Gamma_R = 1j * (sigma_R - dagger(sigma_R))
 
-        f_L = self.fermi_distribution(np.real(E), self.ham.Vs, self.ham.kbT_eV)
-        f_R = self.fermi_distribution(np.real(E), self.ham.Vd, self.ham.kbT_eV)
+        f_L = self.fermi_distribution(np.real(E), self.ham.Vs)
+        f_R = self.fermi_distribution(np.real(E), self.ham.Vd)
 
         sigma_L_lesser = Gamma_L * f_L
         sigma_R_lesser = Gamma_R * f_R
@@ -318,3 +322,40 @@ class GreensFunction:
         # Conductance in units of G0 = 2e^2/h is simply the transmission at the Fermi energy.
         T = self.compute_transmission(E=E_F, self_energy_method=self_energy_method)
         return T    
+    
+    def _current_worker(self, param):
+        """Worker for multiprocessing: computes current for (E, ky)."""
+        E, ky, self_energy_method = param
+        G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
+            E, ky=ky, use_rgf=True, self_energy_method=self_energy_method, compute_lesser=True
+        )
+        f_s = self.fermi_distribution(E, self.ham.Vs)
+        f_d = self.fermi_distribution(E, self.ham.Vd)
+        sigma_less_left = Gamma_L * f_s
+        sigma_less_right = Gamma_R * f_d
+        A_matrix = np.diag(1j * (G_R - G_R.conj()))
+        IL_contrib = np.real(np.sum(sparse_diag_product(sigma_less_left, A_matrix))) \
+                        - np.real(np.sum(sparse_diag_product(Gamma_L, np.diag(G_lesser_diag))))
+        IR_contrib = np.real(np.sum(sparse_diag_product(sigma_less_right, A_matrix))) \
+                        - np.real(np.sum(sparse_diag_product(Gamma_R, np.diag(G_lesser_diag))))
+        # dE should be defined (energy step)
+        current_contribution = self.dE * (self.ham.q**2 / (2 * np.pi * spc.hbar)) * (IL_contrib - IR_contrib)
+        return current_contribution
+
+    def compute_total_current(self, self_energy_method="sancho_rubio"):
+        """
+        Compute total current by summing over all (E, ky) pairs using multiprocessing.
+        """
+        # Define energy and ky grids
+        E_list = self.energy_grid
+        ky_list = self.k_space
+        param_grid = list(product(E_list, ky_list, [self_energy_method]))
+
+        print(f"Starting current calculations for {len(param_grid)} (E, ky) pairs...")
+
+        with multiprocessing.Pool(processes=32) as pool:
+            results = pool.map(self._current_worker, param_grid)
+
+        # Sum over all energy and ky points
+        total_current = np.sum(results)
+        return total_current

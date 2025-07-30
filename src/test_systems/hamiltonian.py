@@ -1,14 +1,18 @@
 import numpy as np
 import scipy.sparse as sp
+import scipy.constants as spc
 from unit_cell_generation import GrapeheneZigZagCell
 class Hamiltonian:
     """
     Constructs tight-binding Hamiltonians for various device structures.
     """
-    def __init__(self, name, periodic = False):
+    def __init__(self, name, periodic = False, relevant_parameters = {}):
         if((periodic and name != "zigzag")):
             raise ValueError("periodic not available or possible")
-        
+        self.T = 300  # Use the passed temperature parameter
+        self.q = spc.e
+        self.kbT = spc.Boltzmann * self.T  # Keep in Joules
+        self.kbT_eV = spc.Boltzmann * self.T / self.q  # Also store in eV for convenience
         self.name = name
         self.t = 1   # Hopping energy
         self.o = 0.0   # Base on-site energy
@@ -31,8 +35,12 @@ class Hamiltonian:
         self.Nx = 10
         self.Ny = 10
         self.periodic = periodic
-        #modified oned
         
+        self.relevant_parameters = relevant_parameters
+        
+        #modified oned
+        self.hamiltonian_registry = {}
+        self.lead_registry = {}
 
     def one_d_wire(self, blocks=True):
         """Return blocks or full matrix for 1D wire."""
@@ -226,6 +234,8 @@ class Hamiltonian:
         """
         General interface to get the Hamiltonian for the specified device type.
         """
+        if self.name in self.hamiltonian_registry:
+            return self.hamiltonian_registry[self.name](self, blocks, ky)
         if self.name == "zigzag":
             return self.zig_zag_hamiltonian(blocks, ky=ky)
         if self.name ==  "one_d_wire":
@@ -243,7 +253,8 @@ class Hamiltonian:
         Get the principal layer Hamiltonian (H00) and coupling matrices (H01, H10)
         for the semi-infinite leads.
         """
-        
+        if self.name in self.lead_registry:
+            return self.lead_registry[self.name](self, ky)
         if self.name == "one_d_wire" or self.name == "chain" or self.name =="modified_one_d":
             
             H00 = sp.eye(1) * self.o
@@ -270,3 +281,12 @@ class Hamiltonian:
             
         else:
             raise ValueError(f"Lead definition not found for device: {self.name}")
+    
+    def register_hamiltonian(self, name, func):
+        """Register a new hamiltonian construction function."""
+        self.hamiltonian_registry[name] = func
+
+    def register_lead(self, name, func):
+        """Register a new lead function."""
+        self.lead_registry[name] = func
+        
