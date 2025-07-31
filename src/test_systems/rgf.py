@@ -27,7 +27,7 @@ class GreensFunction:
     Recursive Green's Function (RGF) implementation optimized with a smart inversion utility.
     """
 
-    def __init__(self, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio", energy_grid = np.linspace(-5,5, 101)):
+    def __init__(self, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio", energy_grid = np.linspace(-5,5, 300)):
         """
         Initialize the Green's function calculator.
         """
@@ -232,6 +232,9 @@ class GreensFunction:
         )
         dos = -np.imag(G_R_diag) / np.pi
         return np.maximum(dos, 0.0)
+    def _dos_non_periodic_helper(self, params):
+        E, self_energy_method,use_rgf, equilibrium = params
+        return np.sum(self.compute_density_of_states(E,ky=0,self_energy_method=self_energy_method, use_rgf=use_rgf, equilibrium=equilibrium))
     
     def gf_calculations_k_space(self, E, self_energy_method = "sancho_rubio",use_rgf=True, equilibrium=False) -> list:
         """Uses multiprocessing to cache GF for E,ky """
@@ -254,6 +257,16 @@ class GreensFunction:
         end_time = time.time()
         return results
     def calculate_DOS(self, self_energy_method = "sancho_rubio",use_rgf=True, equilibrium=False):
+        
+        if (not self.ham.periodic): # do this for non perioidic
+            param_grid = list(product(self.energy_grid, [self_energy_method],[use_rgf], [equilibrium]))
+            start_time = time.time()
+            with multiprocessing.Pool(processes=32) as pool:
+                results = pool.map(self._dos_non_periodic_helper, param_grid)
+            end_time = time.time()
+            return results
+        
+        
         param_grid = list(product(self.energy_grid, self.k_space, [self_energy_method],[use_rgf], [equilibrium]))
         start_time = time.time()
 

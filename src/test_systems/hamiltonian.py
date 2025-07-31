@@ -288,6 +288,7 @@ class Hamiltonian:
         
 
     def get_potential(self, blocks : bool):
+            
         if blocks:
             return self.potential
         else:
@@ -305,6 +306,8 @@ class Hamiltonian:
             pot_array[atom_idx] = sp.eye(self.num_orbitals) * pot
         
         self.potential = pot_array
+    
+    
         
     
     def register_hamiltonian(self, name, func):
