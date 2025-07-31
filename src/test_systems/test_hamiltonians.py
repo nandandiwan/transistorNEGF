@@ -22,7 +22,7 @@ def plot_ham(name : str, periodic: bool, new_ham = False, lead_func = None, ham_
     # Configuration for plots
     config = {
         "dos": True,
-        "transmission": False,
+        "transmission": True,
         "Id-Vs": True,
         "Id-Vg": False,
         "Vs_list": [0, 0.1, 0.2, 0.3, 0.4, 0.5],
@@ -33,4 +33,4 @@ def plot_ham(name : str, periodic: bool, new_ham = False, lead_func = None, ham_
 
     
 
-plot_ham("zigzag", True)
+plot_ham("zigzag", False)

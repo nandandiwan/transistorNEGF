@@ -124,6 +124,8 @@ class GreensFunction:
         Sigma_lesser = sp.lil_matrix((n, n), dtype=complex)
         Sigma_lesser +=  Gamma_L * f_L
         Sigma_lesser += Gamma_R * f_R
+        Sigma_lesser *= 1j
+        
         Sigma_lesser = Sigma_lesser.tocsc()
 
         G_A = G_R.conj().T
@@ -162,8 +164,8 @@ class GreensFunction:
         f_L = self.fermi_distribution(np.real(E), self.ham.Vs)
         f_R = self.fermi_distribution(np.real(E), self.ham.Vd)
 
-        sigma_L_lesser = Gamma_L * f_L
-        sigma_R_lesser = Gamma_R * f_R
+        sigma_L_lesser = Gamma_L * f_L *1j
+        sigma_R_lesser = Gamma_R * f_R * 1j
 
         g_R = []
         g_lesser = []
@@ -303,14 +305,14 @@ class GreensFunction:
         return G_R_diag
 
     
-    def compute_transmission(self, E, self_energy_method=None):
+    def compute_transmission(self, E, ky=0, self_energy_method=None):
         """
         Compute the transmission coefficient T(E) using the Caroli formula.
         T(E) = Tr[Γ_L * G_R * Γ_R * G_A]
         """
         # Get Green's function and broadening matrices
         G_R, Gamma_L, Gamma_R = self.compute_central_greens_function(
-            E, use_rgf=False, self_energy_method=self_energy_method, compute_lesser=False
+            E,ky=ky, use_rgf=False, self_energy_method=self_energy_method, compute_lesser=False
         )
 
         # Convert to dense arrays for matrix multiplication
@@ -319,14 +321,11 @@ class GreensFunction:
         Gamma_L_dense = Gamma_L.toarray()
         Gamma_R_dense = Gamma_R.toarray()
 
-        # Calculate the transmission matrix product
         T_matrix = Gamma_L_dense @ G_R_dense @ Gamma_R_dense @ G_A_dense
         
-        # The transmission is the trace of this matrix.
-        # It should be real, but we take np.real to discard numerical noise.
         T = np.real(np.trace(T_matrix))
         
-        return max(T, 0) # Ensure non-negative due to any remaining noise
+        return max(T, 0) 
 
     def compute_conductance(self, E_F=0.0, self_energy_method=None):
         """
@@ -338,31 +337,41 @@ class GreensFunction:
     
     def _current_worker(self, param):
         """Worker for multiprocessing: computes current for (E, ky)."""
-        E, ky, self_energy_method = param
+        E, ky, self_energy_method, use_rgf = param
+        
+        if not use_rgf:
+            transmission = self.compute_transmission(E, ky, self_energy_method)
+
+            f_s = self.fermi_distribution(E, self.ham.Vs)
+            f_d = self.fermi_distribution(E, self.ham.Vd)
+            IL_contrib = transmission * f_s
+            IR_contrib = transmission * f_d
+            current_contribution = self.dE * (self.ham.q**2 / (2 * np.pi * spc.hbar)) * (IL_contrib - IR_contrib)
+            
+            return current_contribution
+        
         G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
             E, ky=ky, use_rgf=True, self_energy_method=self_energy_method, compute_lesser=True
         )
         f_s = self.fermi_distribution(E, self.ham.Vs)
         f_d = self.fermi_distribution(E, self.ham.Vd)
-        sigma_less_left = Gamma_L * f_s
-        sigma_less_right = Gamma_R * f_d
+        sigma_less_left = Gamma_L * f_s * 1j
+        sigma_less_right = Gamma_R * f_d * 1j
         A_matrix = np.diag(1j * (G_R - G_R.conj()))
-        IL_contrib = np.real(np.sum(sparse_diag_product(sigma_less_left, A_matrix))) \
-                        - np.real(np.sum(sparse_diag_product(Gamma_L, np.diag(G_lesser_diag))))
-        IR_contrib = np.real(np.sum(sparse_diag_product(sigma_less_right, A_matrix))) \
-                        - np.real(np.sum(sparse_diag_product(Gamma_R, np.diag(G_lesser_diag))))
+        term1 = np.sum(Gamma_L.diagonal() * G_lesser_diag)
+        term2 = f_s * np.sum(Gamma_L.diagonal() * A_matrix)
         # dE should be defined (energy step)
-        current_contribution = self.dE * (self.ham.q**2 / (2 * np.pi * spc.hbar)) * (IL_contrib - IR_contrib)
+        current_contribution = self.dE * (self.ham.q**2 / (2 * np.pi * spc.hbar)) * (term1 - term2)
         return current_contribution
 
-    def compute_total_current(self, self_energy_method="sancho_rubio"):
+    def compute_total_current(self, self_energy_method="sancho_rubio", use_rgf = False):
         """
         Compute total current by summing over all (E, ky) pairs using multiprocessing.
         """
         # Define energy and ky grids
         E_list = self.energy_grid
         ky_list = self.k_space
-        param_grid = list(product(E_list, ky_list, [self_energy_method]))
+        param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf]))
 
         print(f"Starting current calculations for {len(param_grid)} (E, ky) pairs...")
 

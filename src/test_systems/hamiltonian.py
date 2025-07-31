@@ -197,25 +197,17 @@ class Hamiltonian:
                     j = layer_atom_to_idx[neighbor]
                     H0[i, j] = t
 
-        # --- 2. Build the Interaction Block (H1) ---
-        # Describes connections between layer 0 and layer 1
+
         H1 = np.zeros((num_atoms_layer, num_atoms_layer), dtype=complex)
-        
-        # Find neighbors of atoms in layer 0 that are in layer 1
+
         layer_1_atoms = set(unitCell.structure[num_atoms_layer : 2 * num_atoms_layer])
 
         for i, atom_in_layer0 in enumerate(unitCell.layer):
             for neighbor, delta, l, m, n in unitCell.neighbors[atom_in_layer0]:
                 
                 if neighbor in layer_1_atoms:
-                    #print(neighbor)
-                    
-                    # Find the corresponding atom in layer 0 by shifting it back
-                    # This assumes your structure is perfectly periodic
                     shifted_neighbor_pos = (neighbor.x - (unitCell.sin60 * 2), neighbor.y, neighbor.z)
                     
-                    # You need to handle potential floating point issues here
-                    # A better way would be to create a robust mapping
                     for atom_in_l0, idx in layer_atom_to_idx.items():
                         if np.allclose(atom_in_l0.pos(), shifted_neighbor_pos, atol=1e-5):
                             j = idx
@@ -231,6 +223,21 @@ class Hamiltonian:
         # Create a list of the diagonal blocks (all H0)
         diagonal_blocks = [H0_sparse] * unitCell.num_layers_x
         off_diagonal_blocks = [H1_sparse] * (unitCell.num_layers_x - 1)
+        if (not blocks):
+            H_main_diag = sp.block_diag(diagonal_blocks, format='csc', dtype=complex)
+            num_blocks = len(diagonal_blocks)
+            block_rows, block_cols = diagonal_blocks[0].shape
+            full_dim = num_blocks * block_rows
+
+            H_upper = sp.lil_matrix((full_dim, full_dim), dtype=complex)
+
+            for i, block in enumerate(off_diagonal_blocks):
+                row_start = i * block_rows
+                col_start = (i + 1) * block_cols
+                H_upper[row_start : row_start + block_rows, col_start : col_start + block_cols] = block
+            H_upper = H_upper.tocsc()
+            H_full = H_main_diag + H_upper + H_upper.conj().T
+            return H_full
         return diagonal_blocks, off_diagonal_blocks
         
 
