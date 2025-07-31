@@ -19,7 +19,7 @@ class Hamiltonian:
         self.Vs = 0.0  # Source voltage
         self.Vd = 0.0  # Drain voltage
         self.Vg = 0  # Gate voltage applied to the device region
-
+        self.num_orbitals = 1
         self.N = 120
        
         self.W = 5   # Width of the QPC
@@ -41,6 +41,10 @@ class Hamiltonian:
         #modified oned
         self.hamiltonian_registry = {}
         self.lead_registry = {}
+        
+        self.potential = None
+        
+        
 
     def one_d_wire(self, blocks=True):
         """Return blocks or full matrix for 1D wire."""
@@ -281,6 +285,27 @@ class Hamiltonian:
             
         else:
             raise ValueError(f"Lead definition not found for device: {self.name}")
+        
+
+    def get_potential(self, blocks : bool):
+        if blocks:
+            return self.potential
+        else:
+            x = np.array([])
+            for block in self.potential:
+                x = np.concatenate(x, np.diag(block.toarray()))
+            
+            return sp.csc_matrix(np.diag(x))
+    
+    def atom_to_potential(self, atom_to_pot : dict, unit_cell):
+        pot_array = [None] * (len(unit_cell.ATOM_POSITIONS))
+        
+        for atom_idx,atom in enumerate(unit_cell.ATOM_POSITIONS):
+            pot = atom_to_pot[atom]
+            pot_array[atom_idx] = sp.eye(self.num_orbitals) * pot
+        
+        self.potential = pot_array
+        
     
     def register_hamiltonian(self, name, func):
         """Register a new hamiltonian construction function."""
