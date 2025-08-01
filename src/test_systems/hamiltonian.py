@@ -30,6 +30,7 @@ class Hamiltonian:
         
         # for unit cell hamiltonians
         self.unit_cell = None
+
         
         #zig zag
         self.Nx = 10
@@ -43,7 +44,14 @@ class Hamiltonian:
         self.lead_registry = {}
         
         self.potential = None
-        
+    
+    def get_num_sites(self):
+        if (self.name == "one_d_wire" or self.name == "modified_one_d"):
+            return self.N
+        elif (self.name == "qpc"):
+            return self.W * self.L
+        else:
+            return self.num_orbitals * len(self.unit_cell.ATOM_POSITIONS)
         
 
     def one_d_wire(self, blocks=True):

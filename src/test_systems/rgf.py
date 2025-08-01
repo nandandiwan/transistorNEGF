@@ -24,7 +24,7 @@ from utils import sparse_diag_product
 
 class GreensFunction:
     """
-    Recursive Green's Function (RGF) implementation optimized with a smart inversion utility.
+    Class which deals with greens function and associated properties
     """
 
     def __init__(self, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio", energy_grid = np.linspace(-5,5, 300)):
@@ -45,6 +45,12 @@ class GreensFunction:
         self.dE = self.energy_grid[1] - self.energy_grid[0]
         # The sparse_threshold is now handled by the smart_inverse function
         # self.sparse_threshold = 0.1
+        
+        self.boltzmann = False
+        self.V = None
+        self.Efn = None
+        self.Ef = None
+
 
     def fermi_distribution(self, E, mu):
         """Fermi-Dirac distribution function."""
@@ -349,7 +355,7 @@ class GreensFunction:
             current_contribution = self.dE * (self.ham.q**2 / (2 * np.pi * spc.hbar)) * (IL_contrib - IR_contrib)
             
             return current_contribution
-        
+        """The code below is likely incorrect"""
         G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
             E, ky=ky, use_rgf=True, self_energy_method=self_energy_method, compute_lesser=True
         )
@@ -381,3 +387,136 @@ class GreensFunction:
         # Sum over all energy and ky points
         total_current = np.sum(results)
         return total_current
+    
+    def compute_charge_density(self, self_energy_method="sancho_rubio", use_rgf=True):
+        E_list = self.energy_grid
+        ky_list = self.k_space
+        param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf]))
+        
+        with multiprocessing.Pool(processes=32) as pool:
+            results = pool.map(self._charge_worker, param_grid)
+        if not results:
+            print("Warning: No results returned from multiprocessing.")
+            n_sites = self.ham.create_hamiltonian(blocks=False).shape[0]
+            return np.zeros(n_sites)
+        total_density = np.sum(results, axis=0)
+        if ky_list.size > 0:
+            total_density /= ky_list.size
+        return total_density.real
+    
+    
+    def _charge_worker(self, param):
+        E, ky, self_energy_method, use_rgf = param
+        G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
+            E, ky=ky, use_rgf=use_rgf, self_energy_method=self_energy_method, compute_lesser=True
+        )
+        G_n_diag = -1j * G_lesser_diag
+        return self.dE * G_n_diag * 1 / (2 * np.pi)
+
+    def diff_rho_poisson(self, Efn=None, V=None, Ef=None, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio"):
+        """This finds the gradient of charge density wrt potential, note that all inputs are arrays here"""
+        E_max = Ef + 10 * self.ham.kbT_eV 
+        E_list, dE = np.linspace(Ef, E_max, num_points, retstep=True) 
+        self.V = V
+        self.Efn = Efn
+        self.boltzmann = boltzmann
+
+        ky_list = self.k_space
+        param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf], [dE]))
+
+      
+        with multiprocessing.Pool(processes=32) as pool:
+            results = pool.map(self._diff_rho_poisson_worker, param_grid)
+
+        if not results:
+            print("Warning: No results returned from multiprocessing.")
+            n_sites = self.ham.create_hamiltonian(blocks=False).shape[0]
+            return np.zeros(n_sites)
+
+
+        diff_rho = np.sum(results, axis=0)
+
+        if ky_list.size > 0:
+            diff_rho /= ky_list.size
+
+        return diff_rho.real
+    def _diff_rho_poisson_worker(self, param):
+        E, ky, self_energy_method, use_rgf, dE = param 
+        gf_param = (E, ky, self_energy_method, use_rgf, False)
+        gf_matrix = self._calculate_gf_simple(gf_param) 
+        ldos_vector = -1 / np.pi * np.imag(gf_matrix)
+        
+        exp_arg = (E - self.V - self.Efn) / self.ham.kbT_eV
+        exp_arg = np.clip(exp_arg, -100, 100)
+        boltzmann_part = np.exp(exp_arg)
+
+        if self.boltzmann:
+            return ldos_vector * (1 / boltzmann_part) / self.ham.kbT_eV * dE
+        else:
+            
+            fermi_derivative_part = boltzmann_part / ( (1 + boltzmann_part)**2 )
+            return ldos_vector * fermi_derivative_part / self.ham.kbT_eV * dE
+        
+
+            
+    def get_n(self, V, Efn, Ec, num_points = 51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio"):
+        E_max = Ec + 10 
+        E_list = np.linspace(Ec, E_max, num_points) 
+        if num_points > 1:
+            dE = E_list[1] - E_list[0]
+        else:
+            dE = 1.0  # Default value if only one point
+        self.V = V
+        self.Efn = Efn
+        self.boltzmann = boltzmann
+
+        ky_list = self.k_space
+        param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf], [dE]))
+
+      
+        with multiprocessing.Pool(processes=32) as pool:
+            results = pool.map(self.n_worker, param_grid)
+
+        if not results:
+            print("Warning: No results returned from multiprocessing.")
+            n_sites = self.ham.create_hamiltonian(blocks=False).shape[0]
+            return np.zeros(n_sites)
+
+
+        n = np.sum(results, axis=0)
+
+        if ky_list.size > 0:
+            n /= ky_list.size
+
+        return n.real
+    def n_worker(self, param):
+        E, ky, self_energy_method, use_rgf, dE = param 
+        
+        
+        G_R, Gamma_L, Gamma_R = self.compute_central_greens_function(
+            E, ky=ky, use_rgf=use_rgf, self_energy_method=self_energy_method, compute_lesser=False
+        )
+        
+        ldos_vector = -1 / np.pi * np.imag(G_R)
+        
+        exp_arg = (E - self.V - self.Efn) / self.ham.kbT_eV
+        exp_arg = np.clip(exp_arg, -100, 100)
+        boltzmann_part = np.exp(exp_arg)
+
+        if self.boltzmann:
+            return ldos_vector * boltzmann_part * dE
+        else:
+            fermi_part = 1 / (1 + boltzmann_part)
+            return ldos_vector * fermi_part* dE
+        
+    def compute_ldos_matrix(self, self_energy_method="sancho_rubio", use_rgf=True):
+        num_sites = self.ham.get_num_sites() 
+        num_energies = len(self.energy_grid)
+        ldos_matrix = np.zeros((num_energies, num_sites))
+
+        for i, E in enumerate(self.energy_grid):
+            # This needs to be parallelized for efficiency, similar to your other methods
+            dos_at_E = self.compute_density_of_states(E, use_rgf=use_rgf, self_energy_method=self_energy_method)
+            ldos_matrix[i, :] = dos_at_E
+
+        return ldos_matrix
