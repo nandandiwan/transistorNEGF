@@ -23,6 +23,7 @@ class Hamiltonian:
         self.N = 120
         self.mu1 = 0 # chemical potential at left
         self.mu2 = 0  # chemical potential at right 
+        self.Ef = 0.1
        
         self.W = 5   # Width of the QPC
         self.L = 10  # Length of the QPC
@@ -374,21 +375,32 @@ class Hamiltonian:
                 if 0 <= pos + i < N:
                     self.potential[pos + i] += sp.eye(self.num_orbitals) * height
     
-    def set_linear_potential(self, V_start, V_end):
-        """
-        Set a linear potential profile from V_start to V_end.
-        
-        Args:
-            V_start (float): Potential at the first site
-            V_end (float): Potential at the last site
-        """
+    def set_linear_potential(self, V_start, V_end, middle_third=False):
+
         N = self.get_num_sites()
         self.potential = []
-        
-        for i in range(N):
-            V = V_start + (V_end - V_start) * i / (N - 1)
-            self.potential.append(sp.eye(self.num_orbitals) * V)
-    
+
+        if middle_third:
+            n1 = N // 3
+            n2 = 2 * N // 3
+
+            for i in range(N):
+                if i < n1:
+
+                    V = V_start
+                elif i >= n2:
+                    V = V_end
+                else:
+                    ramp_i = i - n1
+                    ramp_len = n2 - n1
+                    V = V_start + (V_end - V_start) * ramp_i / (ramp_len - 1)
+
+                self.potential.append(sp.eye(self.num_orbitals) * V)
+        else:
+
+            for i in range(N):
+                V = V_start + (V_end - V_start) * i / (N - 1)
+                self.potential.append(sp.eye(self.num_orbitals) * V)
     def set_double_barrier_potential(self, barrier1_pos, barrier2_pos, barrier_height, barrier_width=2, well_depth=0.0):
         """
         Set a double barrier potential with a quantum well.

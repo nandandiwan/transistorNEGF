@@ -268,12 +268,12 @@ class LeadSelfEnergy():
         # Handle large energies
         if np.abs(E) > 5e5:
             return np.zeros((H00.shape[0], H00.shape[0]), dtype=complex)
+        Vsd = (self.ham.Vs + self.ham.Vd)
 
-        # Apply bias voltage
         if side == "left":
-            E_lead = E - self.ham.Vs
+            E_lead = E - self.ham.Vs* - (self.ham.Ef+Vsd/2)
         else:  # right
-            E_lead = E - self.ham.Vd
+            E_lead = E - self.ham.Vd*0 - (self.ham.Ef-Vsd/2)
 
         # Calculate surface Green's function
         try:
