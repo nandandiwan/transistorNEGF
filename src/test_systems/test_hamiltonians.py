@@ -16,7 +16,8 @@ def plot_ham(name : str, periodic: bool, new_ham = False, lead_func = None, ham_
     if (new_ham):
         ham.register_hamiltonian(name, ham_func)
         ham.register_lead(name, lead_func)
-        
+    
+
     gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-3, 3, 500))
 
     # Configuration for plots

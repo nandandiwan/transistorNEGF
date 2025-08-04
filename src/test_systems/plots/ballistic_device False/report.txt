@@ -1,0 +1,3 @@
+System: ballistic_device
+Parameters: {}
+Plots generated: transmission, Id-Vs, potential_profile, Vs_list

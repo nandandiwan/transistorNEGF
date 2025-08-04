@@ -21,6 +21,8 @@ class Hamiltonian:
         self.Vg = 0  # Gate voltage applied to the device region
         self.num_orbitals = 1
         self.N = 120
+        self.mu1 = 0 # chemical potential at left
+        self.mu2 = 0  # chemical potential at right 
        
         self.W = 5   # Width of the QPC
         self.L = 10  # Length of the QPC
@@ -350,6 +352,80 @@ class Hamiltonian:
         else:
             pot_matrix = self.get_potential(blocks)
             return hamiltonian + pot_matrix
+    
+    def set_barrier_potential(self, positions, height, width=1):
+        """
+        Set a barrier potential at specified positions.
+        
+        Args:
+            positions (list or int): Position(s) where to place barrier
+            height (float): Height of the barrier in eV
+            width (int): Width of each barrier in sites
+        """
+        N = self.get_num_sites()
+        if self.potential is None:
+            self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(N)]
+        
+        if isinstance(positions, int):
+            positions = [positions]
+            
+        for pos in positions:
+            for i in range(width):
+                if 0 <= pos + i < N:
+                    self.potential[pos + i] += sp.eye(self.num_orbitals) * height
+    
+    def set_linear_potential(self, V_start, V_end):
+        """
+        Set a linear potential profile from V_start to V_end.
+        
+        Args:
+            V_start (float): Potential at the first site
+            V_end (float): Potential at the last site
+        """
+        N = self.get_num_sites()
+        self.potential = []
+        
+        for i in range(N):
+            V = V_start + (V_end - V_start) * i / (N - 1)
+            self.potential.append(sp.eye(self.num_orbitals) * V)
+    
+    def set_double_barrier_potential(self, barrier1_pos, barrier2_pos, barrier_height, barrier_width=2, well_depth=0.0):
+        """
+        Set a double barrier potential with a quantum well.
+        
+        Args:
+            barrier1_pos (int): Position of first barrier
+            barrier2_pos (int): Position of second barrier  
+            barrier_height (float): Height of barriers in eV
+            barrier_width (int): Width of each barrier in sites
+            well_depth (float): Depth of quantum well (negative for well)
+        """
+        N = self.get_num_sites()
+        self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(N)]
+        
+        # Set barriers
+        for i in range(barrier_width):
+            if 0 <= barrier1_pos + i < N:
+                self.potential[barrier1_pos + i] += sp.eye(self.num_orbitals) * barrier_height
+            if 0 <= barrier2_pos + i < N:
+                self.potential[barrier2_pos + i] += sp.eye(self.num_orbitals) * barrier_height
+        
+        # Set quantum well between barriers
+        well_start = barrier1_pos + barrier_width
+        well_end = barrier2_pos
+        for i in range(well_start, well_end):
+            if 0 <= i < N:
+                self.potential[i] += sp.eye(self.num_orbitals) * well_depth
+    
+    def clear_potential(self):
+        """Clear all potential."""
+        self.potential = None
+    
+    def reset_voltages(self):
+        """Reset all voltages to zero."""
+        self.Vs = 0.0
+        self.Vd = 0.0
+        self.Vg = 0.0
             
     
     def register_hamiltonian(self, name, func):

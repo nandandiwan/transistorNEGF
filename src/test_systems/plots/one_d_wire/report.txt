@@ -1,3 +1,0 @@
-System: one_d_wire
-Parameters: {}
-Plots generated: dos, transmission, Id-Vs, Vs_list, Vg_list
