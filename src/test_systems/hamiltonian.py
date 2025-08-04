@@ -254,18 +254,21 @@ class Hamiltonian:
         General interface to get the Hamiltonian for the specified device type.
         """
         if self.name in self.hamiltonian_registry:
-            return self.hamiltonian_registry[self.name](self, blocks, ky)
-        if self.name == "zigzag":
-            return self.zig_zag_hamiltonian(blocks, ky=ky)
-        if self.name ==  "one_d_wire":
-            return self.one_d_wire(blocks=blocks)
-        if self.name == "quantum_point_contact" or self.name == "qpc":
-            return self.quantum_point_contact(blocks=blocks)
-        if self.name == "modified_one_d":
-            return self.modified_one_d_wire(blocks)
+            H = self.hamiltonian_registry[self.name](self, blocks, ky)
+        elif self.name == "zigzag":
+            H = self.zig_zag_hamiltonian(blocks, ky=ky)
+        elif self.name ==  "one_d_wire":
+            H = self.one_d_wire(blocks=blocks)
+        elif self.name == "quantum_point_contact" or self.name == "qpc":
+            H = self.quantum_point_contact(blocks=blocks)
+        elif self.name == "modified_one_d":
+            H = self.modified_one_d_wire(blocks)
         else:
             # You can add other device types like "one_d_wire" here.
             raise ValueError(f"Unknown device type: {self.name}")
+        
+        H = self.add_potential(H, blocks)
+        return H
 
     def get_H00_H01_H10(self, ky=0):
         """
@@ -302,15 +305,20 @@ class Hamiltonian:
             raise ValueError(f"Lead definition not found for device: {self.name}")
         
 
-    def get_potential(self, blocks : bool):
-            
+    def get_potential(self, blocks: bool):
+        if self.potential is None:
+            return None
+
         if blocks:
             return self.potential
         else:
-            x = np.array([])
+            # Collect all diagonals in a list
+            diag_list = []
             for block in self.potential:
-                x = np.concatenate(x, np.diag(block.toarray()))
-            
+                diag_list.append(np.diag(block.toarray()))
+            if len(diag_list) == 0:
+                return None
+            x = np.concatenate(diag_list)
             return sp.csc_matrix(np.diag(x))
     
     def atom_to_potential(self, atom_to_pot : dict, unit_cell):
@@ -322,8 +330,27 @@ class Hamiltonian:
         
         self.potential = pot_array
     
-    
-        
+
+    def add_potential(self, hamiltonian, blocks: bool):
+        if self.potential is None:
+            return hamiltonian
+        if blocks:
+            pot_list = self.get_potential(blocks)
+            # Handle tuple (diag, offdiag) or just a list
+            if isinstance(hamiltonian, tuple):
+                diag, *rest = hamiltonian
+                # Add potential only to diagonal blocks
+                diag_with_pot = [d + p for d, p in zip(diag, pot_list)]
+                return (diag_with_pot, *rest)
+            elif isinstance(hamiltonian, list):
+                # Add potential to each block in the list
+                return [h + p for h, p in zip(hamiltonian, pot_list)]
+            else:
+                raise TypeError("Unexpected type for hamiltonian in blocks mode.")
+        else:
+            pot_matrix = self.get_potential(blocks)
+            return hamiltonian + pot_matrix
+            
     
     def register_hamiltonian(self, name, func):
         """Register a new hamiltonian construction function."""

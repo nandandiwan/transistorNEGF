@@ -12,6 +12,7 @@ import multiprocessing
 import numpy as np
 import scipy.sparse as sp
 from scipy.linalg import inv 
+from scipy.integrate import quad_vec
 import scipy.constants as spc
 import warnings
 
@@ -458,57 +459,164 @@ class GreensFunction:
             return ldos_vector * fermi_derivative_part / self.ham.kbT_eV * dE
         
 
+          
+          
             
-    def get_n(self, V, Efn, Ec, num_points = 51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio"):
-        E_max = Ec + 10 
-        E_list = np.linspace(Ec, E_max, num_points) 
-        if num_points > 1:
-            dE = E_list[1] - E_list[0]
-        else:
-            dE = 1.0  # Default value if only one point
-        self.V = V
-        self.Efn = Efn
+    def get_n(self, V, Efn, Ec, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio", 
+              method='adaptive', rtol=1e-6, atol=1e-12, processes=4):
+        """
+        Compute carrier density with improved parallel and vectorized integration methods.
+        
+        Parameters:
+        -----------
+        processes : int
+            Number of parallel processes to use for k-point calculations.
+        ... (rest of your docstring)
+        """
+        self.V = np.atleast_1d(V)
+        self.Efn = np.atleast_1d(Efn)
         self.boltzmann = boltzmann
 
-        ky_list = self.k_space
-        param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf], [dE]))
+        # Store parameters that workers will need, avoiding passing them repeatedly.
+        self._worker_params = {
+            'use_rgf': use_rgf,
+            'self_energy_method': self_energy_method
+        }
+        
+        # Fallback to serial execution if only one k-point or one process
+        if processes <= 1:
+            print("Running in serial mode (1 k-point or 1 process).")
+            # Create a mock pool for a unified code path
+            pool = multiprocessing.Pool.ThreadPool(1) 
+        else:
+            print(f"Running in parallel mode with {processes} processes.")
+            pool = multiprocessing.Pool(processes=processes)
 
-      
-        with multiprocessing.Pool(processes=32) as pool:
-            results = pool.map(self.n_worker, param_grid)
-
+        with pool:
+            if method == 'adaptive':
+                results = pool.map(self._adaptive_worker, self.k_space)
+            elif method == 'gauss_fermi':
+                self._worker_params['Ec'] = Ec
+                results = pool.map(self._gauss_fermi_worker, self.k_space)
+            else: # uniform
+                # Create the parameter grid for the uniform method
+                E_max = Ec + 10 
+                E_list = np.linspace(Ec, E_max, num_points)
+                if num_points > 1:
+                    dE = E_list[1] - E_list[0]
+                else:
+                    dE = 1.0
+                param_grid = list(product(E_list, self.k_space, [dE]))
+                results = pool.map(self._uniform_worker, param_grid)
+        
+        # The reduction step is different for the uniform grid
         if not results:
-            print("Warning: No results returned from multiprocessing.")
-            n_sites = self.ham.create_hamiltonian(blocks=False).shape[0]
+            print("Warning: No results returned from processing.")
+            n_sites = self.ham.get_num_sites()
             return np.zeros(n_sites)
 
-
-        n = np.sum(results, axis=0)
-
-        if ky_list.size > 0:
-            n /= ky_list.size
-
-        return n.real
-    def n_worker(self, param):
-        E, ky, self_energy_method, use_rgf, dE = param 
-        
-        
-        G_R, Gamma_L, Gamma_R = self.compute_central_greens_function(
-            E, ky=ky, use_rgf=use_rgf, self_energy_method=self_energy_method, compute_lesser=False
-        )
-        
-        ldos_vector = -1 / np.pi * np.imag(G_R)
-        
-        exp_arg = (E - self.V - self.Efn) / self.ham.kbT_eV
-        exp_arg = np.clip(exp_arg, -100, 100)
-        boltzmann_part = np.exp(exp_arg)
-
-        if self.boltzmann:
-            return ldos_vector * boltzmann_part * dE
+        if method == 'uniform':
+            # For uniform, results are already multiplied by dE and need to be summed
+            total_density = np.sum(results, axis=0)
+            if len(self.k_space) > 0:
+                total_density /= len(self.k_space)
         else:
-            fermi_part = 1 / (1 + boltzmann_part)
-            return ldos_vector * fermi_part* dE
+            # For adaptive/gauss, results are integrated densities per k-point
+            total_density = np.mean(results, axis=0)
+
+        return total_density.real
+
+    # --- Worker for Adaptive Integration ---
+    def _adaptive_worker(self, ky):
+        """Worker function that performs adaptive integration for a single k-point."""
+        kT = self.ham.kbT_eV
+        n_sites = self.ham.get_num_sites()
+
+        mu_min = np.min(self.V + self.Efn)
+        mu_max = np.max(self.V + self.Efn)
+        E_min = mu_min - 2
+        E_max = mu_max + 2
+        # In a real scenario, Ec could be k-dependent, but we assume it's constant here
+        # E_min = max(Ec, E_min) # Ec should be passed if needed
+
+        def integrand_per_k(E):
+            G_R, _, _ = self.compute_central_greens_function(
+                E, ky=ky,compute_lesser=False
+            )
+            if sp.issparse(G_R): 
+                diag_G_R = G_R.diagonal()
+            else:
+                diag_G_R = G_R
+                
+                
+            
+            ldos_vector = -1.0 / np.pi * np.imag(diag_G_R)
+            
+            exp_arg = np.clip((E - self.V - self.Efn) / kT, -700, 700)
+            distribution = np.exp(-exp_arg) if self.boltzmann else 1.0 / (1.0 + np.exp(exp_arg))
+            
+            return ldos_vector * distribution
+
+        integral_vector, _ = quad_vec(integrand_per_k, E_min, E_max, epsrel=1e-6, epsabs=1e-12)
+        return integral_vector
+
+    # --- Worker for Gauss-Fermi Integration ---
+    def _gauss_fermi_worker(self, ky):
+        """Worker function for Gauss-Fermi integration for a single k-point."""
+        kT = self.ham.kbT_eV
+        n_sites = self.ham.get_num_sites()
+        Ec = self._worker_params['Ec']
         
+        mu_avg = np.mean(self.V + self.Efn)
+        x_min = (Ec - mu_avg) / kT
+        x_max = 20.0
+        
+        n_quad = 32
+        x_points, weights = np.polynomial.legendre.leggauss(n_quad)
+        x_scaled = 0.5 * (x_max - x_min) * x_points + 0.5 * (x_max + x_min)
+        weights_scaled = weights * 0.5 * (x_max - x_min)
+        
+        ky_density = np.zeros(n_sites)
+        for x, w in zip(x_scaled, weights_scaled):
+            E_ref = mu_avg + x * kT
+            G_R, _, _ = self.compute_central_greens_function(
+                E_ref, ky=ky, compute_lesser=False
+            )
+            if sp.issparse(G_R): 
+                diag_G_R = G_R.diagonal()
+            else:
+                diag_G_R = G_R
+            
+            ldos_vector = -1.0 / np.pi * np.imag(diag_G_R)
+            
+            exp_arg = (E_ref - self.V - self.Efn) / kT
+            fermi_vector = np.exp(-exp_arg) if self.boltzmann else 1.0 / (1.0 + np.exp(exp_arg))
+            
+            ky_density += w * ldos_vector * fermi_vector * kT
+            
+        return ky_density
+
+    # --- Worker for Uniform Grid Integration ---
+    def _uniform_worker(self, params):
+        """Worker for the original uniform grid method, now better vectorized."""
+        E, ky, dE = params
+        kT = self.ham.kbT_eV
+
+        G_R, _, _ = self.compute_central_greens_function(
+            E, ky=ky, compute_lesser=False
+        )
+
+        if sp.issparse(G_R): 
+            diag_G_R = G_R.diagonal()
+        else:
+            diag_G_R = G_R
+        
+        ldos_vector = -1.0 / np.pi * np.imag(diag_G_R)
+        
+        exp_arg = np.clip((E - self.V - self.Efn) / kT, -700, 700)
+        distribution = np.exp(-exp_arg) if self.boltzmann else 1.0 / (1.0 + np.exp(exp_arg))
+        
+        return ldos_vector * distribution * dE        
     def compute_ldos_matrix(self, self_energy_method="sancho_rubio", use_rgf=True):
         num_sites = self.ham.get_num_sites() 
         num_energies = len(self.energy_grid)

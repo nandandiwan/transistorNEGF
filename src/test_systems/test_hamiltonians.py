@@ -17,7 +17,7 @@ def plot_ham(name : str, periodic: bool, new_ham = False, lead_func = None, ham_
         ham.register_hamiltonian(name, ham_func)
         ham.register_lead(name, lead_func)
         
-    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-3, 3, 501))
+    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-3, 3, 500))
 
     # Configuration for plots
     config = {
@@ -33,4 +33,4 @@ def plot_ham(name : str, periodic: bool, new_ham = False, lead_func = None, ham_
 
     
 
-plot_ham("zigzag", False)
+plot_ham("zigzag", True)
