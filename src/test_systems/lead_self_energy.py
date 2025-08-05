@@ -3,7 +3,8 @@ import numpy as np
 from scipy import linalg
 import scipy.sparse as spa
 from hamiltonian import Hamiltonian
-
+import numpy as np
+import scipy.sparse as sp
 
 class LeadSelfEnergy():
     """
@@ -52,6 +53,7 @@ class LeadSelfEnergy():
         """
         Jiezi surface_gf algorithm translated to use numpy arrays
         """
+    
         n = H00.shape[0]
         I = np.eye(n, dtype=complex)
         
@@ -108,8 +110,72 @@ class LeadSelfEnergy():
         
         if iter_c >= iter_max:
             print(f"Warning: Jiezi Surface GF did not converge after {iter_max} iterations")
-            
+            return self.recursive_self_energy_mixed(E, H00,H01)
         return G00
+    def recursive_self_energy_mixed(self, E, H00, H01, max_iter=500, tol=1e-8, mixing_beta=0.1):
+        """
+        Calculates the lead self-energy using a stable RGF method with
+        linear mixing to ensure convergence.
+
+        Args:
+            E (float): Energy.
+            eta (float): Infinitesimal broadening term.
+            H00 (np.ndarray): On-site Hamiltonian of a principal layer.
+            H01 (np.ndarray): Coupling from layer 0 to layer 1.
+            H10 (np.ndarray): Coupling from layer 1 to layer 0.
+            max_iter (int): Maximum number of iterations.
+            tol (float): Convergence tolerance.
+            mixing_beta (float): Damping parameter for the iteration (0 < beta <= 1).
+                                Smaller values are more stable but converge slower.
+
+        Returns:
+            np.ndarray: The converged self-energy matrix, Sigma.
+        """
+        # Load and prepare matrices
+    
+        if sp.issparse(H00): H00 = H00.toarray()
+        if sp.issparse(H01): H01 = H01.toarray()
+        H10 = H01.conj().T
+            
+        w = E
+        identity = np.eye(H00.shape[0])
+
+        # Initial guess for the surface Green's function (g_s)
+        try:
+            g_s = np.linalg.inv(w * identity - H00)
+        except np.linalg.LinAlgError:
+            print("ERROR: Failed on the very first inversion!")
+            return None
+        
+        for i in range(max_iter):
+            g_s_old = g_s.copy()
+
+            # Calculate the self-energy based on the current g_s
+            sigma = H10 @ g_s @ H01
+            
+            # Calculate the "next guess" for g_s
+            mat_to_invert = w * identity - H00 - sigma
+            try:
+                g_s_new = np.linalg.inv(mat_to_invert)
+            except np.linalg.LinAlgError as e:
+                print(f"ERROR: Matrix inversion failed at iteration {i}. {e}")
+                return None # Or handle as appropriate
+
+            # *** MIXING STEP ***
+            # Instead of g_s = g_s_new, we mix the old and new solutions
+            g_s = (1 - mixing_beta) * g_s_old + mixing_beta * g_s_new
+
+            # Check for convergence
+            diff = np.linalg.norm(g_s - g_s_old) / np.linalg.norm(g_s)
+            if diff < tol:
+                # print(f"\n--- Convergence Reached in {i+1} iterations ---")
+                final_sigma = H10 @ g_s @ H01
+                return final_sigma
+
+        print(f"Warning: RGF self-energy with mixing did not converge after {max_iter} iterations. Diff = {diff}")
+        final_sigma = H10 @ g_s @ H01
+        return final_sigma
+
 
     
     def _analytical_1d_surface_gf(self, E):
