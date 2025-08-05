@@ -34,4 +34,4 @@ def plot_ham(name : str, periodic: bool, new_ham = False, lead_func = None, ham_
 
     
 
-plot_ham("zigzag", True)
+plot_ham("zigzag", False)

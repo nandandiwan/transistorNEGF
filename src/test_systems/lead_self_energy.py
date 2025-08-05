@@ -47,6 +47,8 @@ class LeadSelfEnergy():
             return self._iterative_surface_gf(E, H00, H01, tolerance, iteration_max)
         elif method == "transfer":
             return self._transfer_surface_gf(E, H00, H01, tolerance, iteration_max)
+        elif method == "recursive":
+            return self._recursive_self_energy_mixed(E, H00, H01, max_iter=iteration_max, tol = tolerance)
         else:
             raise ValueError(f"Unknown method: {method}")
     def _sancho_rubio_surface_gf(self, E, H00, H01, S00=None, iter_max=100, TOL=1e-10):
@@ -110,9 +112,9 @@ class LeadSelfEnergy():
         
         if iter_c >= iter_max:
             print(f"Warning: Jiezi Surface GF did not converge after {iter_max} iterations")
-            return self.recursive_self_energy_mixed(E, H00,H01)
+            return self._recursive_self_energy_mixed(E, H00,H01)
         return G00
-    def recursive_self_energy_mixed(self, E, H00, H01, max_iter=500, tol=1e-8, mixing_beta=0.1):
+    def _recursive_self_energy_mixed(self, E, H00, H01, max_iter=500, tol=1e-8, mixing_beta=0.1):
         """
         Calculates the lead self-energy using a stable RGF method with
         linear mixing to ensure convergence.

@@ -21,8 +21,8 @@ class Hamiltonian:
         self.Vg = 0  # Gate voltage applied to the device region
         self.num_orbitals = 1
         self.N = 120
-        self.mu1 = 0 # chemical potential at left
-        self.mu2 = 0  # chemical potential at right 
+        self.mu1 = 0.1 # chemical potential at left
+        self.mu2 = 0.1  # chemical potential at right 
         self.Ef = 0.1
        
         self.W = 5   # Width of the QPC
@@ -56,7 +56,13 @@ class Hamiltonian:
         else:
             return self.num_orbitals * len(self.unit_cell.ATOM_POSITIONS)
         
-
+    def set_voltage(self, Vs=0, Vd=0, Vg=0):
+        self.Vs = Vs
+        self.Vd = Vd
+        self.Vg = Vg
+        
+        self.mu1 += self.Vs
+        self.mu2 += self.Vd
     def one_d_wire(self, blocks=True):
         """Return blocks or full matrix for 1D wire."""
         t, o, N = self.t, self.o, self.N
@@ -117,10 +123,6 @@ class Hamiltonian:
         N = W * L
         V_barrier = self.Vg
 
-
-
-
-        
         if blocks:
             total_onsite_potential = np.zeros((W, W), dtype=float)
             for w in range(W):
