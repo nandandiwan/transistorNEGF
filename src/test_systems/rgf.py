@@ -41,7 +41,7 @@ class GreensFunction:
             self.k_space = np.array([0])
         self.lead_self_energy = LeadSelfEnergy(hamiltonian)
         self.self_energy_method = self_energy_method
-        self.eta = 1e-6
+        self.eta = 1e-12
         self.energy_grid = energy_grid
         self.dE = self.energy_grid[1] - self.energy_grid[0]
         # The sparse_threshold is now handled by the smart_inverse function

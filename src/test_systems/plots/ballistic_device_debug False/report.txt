@@ -1,3 +1,0 @@
-System: ballistic_device_debug
-Parameters: {}
-Plots generated: dos, transmission, Id-Vs, potential_profile, Vs_list

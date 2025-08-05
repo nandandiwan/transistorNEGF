@@ -1,3 +1,0 @@
-System: single_device_debug
-Parameters: {}
-Plots generated: transmission, potential_profile, Vs_list

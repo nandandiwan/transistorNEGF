@@ -27,11 +27,11 @@ def test_ballistic_device():
     
     # Set linear potential from source to drain (creates ballistic transport)
     # This creates a smooth potential drop from left to right
-    ham.set_linear_potential(V_start=0.0, V_end=-0.5)  # 0.5V bias
+    
     print("Set linear potential for ballistic transport")
     
     # Create Green's function with energy range around Fermi level
-    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-2, 2, 300))
+    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-.1, .8, 301))
 
     # Configuration for plots - focus on transmission and I-V
     config = {
@@ -55,18 +55,18 @@ def test_tunneling_device():
     
     # Create 1D wire hamiltonian
     ham = Hamiltonian(name="one_d_wire", periodic=False)
-    ham.N = 20  # Number of sites
+    ham.N = 46  # Number of sites
     
     # Create a single high barrier in the middle
     N = ham.get_num_sites()
     barrier_pos = N // 2  # Middle of the device
-    barrier_height = 0.8  # High barrier for tunneling
-    barrier_width = 2     # Width of barrier
+    barrier_height = 0.4  # High barrier for tunneling
+    barrier_width = 4     # Width of barrier
     
     ham.set_barrier_potential(positions=barrier_pos, height=barrier_height, width=barrier_width)
     
     # Create Green's function
-    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-2, 2, 300))
+    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-.1, 1, 301))
 
     # Configuration for plots
     config = {
@@ -90,15 +90,15 @@ def test_resonant_tunneling_device():
     
     # Create 1D wire hamiltonian
     ham = Hamiltonian(name="one_d_wire", periodic=False)
-    ham.N = 25  # Longer device for double barrier structure
+    ham.N = 46  # Longer device for double barrier structure
     
     # Create double barrier with quantum well
     N = ham.get_num_sites()
     barrier1_pos = N // 3      # First barrier position
-    barrier2_pos = 2 * N // 3  # Second barrier position
-    barrier_height = 0.6       # Barrier height
-    barrier_width = 2          # Width of each barrier
-    well_depth = -0.1          # Slight well between barriers (optional)
+    barrier2_pos = 2 * N // 3 -4 # Second barrier position
+    barrier_height = 0.4       # Barrier height
+    barrier_width = 4          # Width of each barrier
+    well_depth = -0.0          # Slight well between barriers (optional)
     
     ham.set_double_barrier_potential(
         barrier1_pos=barrier1_pos,
@@ -109,7 +109,7 @@ def test_resonant_tunneling_device():
     )
     
     # Create Green's function
-    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-2, 2, 300))
+    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-.1, 1, 301))
 
     # Configuration for plots
     config = {
@@ -146,6 +146,7 @@ def test_custom_potential_example():
     pot[2 * N//3 + 1] += sp.eye(1) * 0.5  # Extend second barrier
     
     ham.potential = pot  # Set directly
+    ham.set_linear_potential()
     
     gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-2, 2, 300))
 

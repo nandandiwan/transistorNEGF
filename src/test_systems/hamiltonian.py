@@ -10,12 +10,12 @@ class Hamiltonian:
         if((periodic and name != "zigzag")):
             raise ValueError("periodic not available or possible")
         self.T = 300  # Use the passed temperature parameter
-        self.q = spc.e
+        self.q = spc.elementary_charge
         self.kbT = spc.Boltzmann * self.T  # Keep in Joules
         self.kbT_eV = spc.Boltzmann * self.T / self.q  # Also store in eV for convenience
         self.name = name
-        self.t = 1   # Hopping energy
-        self.o = 0.0   # Base on-site energy
+        self.t = 1 #* spc.hbar**2 / (2 * spc.m_e * .25 * (3e-10)**2 * self.q)   # Hopping energy
+        self.o = 2 #* spc.hbar**2 / (2 * spc.m_e * .25 * (3e-10)**2 * self.q)   # Base on-site energy
         self.Vs = 0.0  # Source voltage
         self.Vd = 0.0  # Drain voltage
         self.Vg = 0  # Gate voltage applied to the device region
@@ -66,15 +66,15 @@ class Hamiltonian:
             A = np.zeros((N, N))
             for i in range(N):
                 if i < N - 1:
-                    A[i, i + 1] = t
-                    A[i + 1, i] = t
+                    A[i, i + 1] = -t
+                    A[i + 1, i] = -t
                 A[i, i] = o
             return sp.csc_matrix(A) 
         
     def modified_one_d_wire(self, blocks=True):
         t, o, N = self.t, self.o, self.N
         if blocks:
-            diag, offdiag =  ([sp.eye(1) * o] * N), ([sp.eye(1) * t] * (N - 1))
+            diag, offdiag =  ([sp.eye(1) * o] * N), ([sp.eye(1) * -t] * (N - 1))
             diag[N//2] += sp.eye(1) * 5
             #diag[N//2 + 1] += sp.eye(1) * 5
             return diag, offdiag
@@ -83,8 +83,8 @@ class Hamiltonian:
             A = np.zeros((N, N))
             for i in range(N):
                 if i < N - 1:
-                    A[i, i + 1] = t
-                    A[i + 1, i] = t
+                    A[i, i + 1] = -t
+                    A[i + 1, i] = -t
                 A[i, i] = o
                 
             A[N//2, N//2] = 5
@@ -93,13 +93,13 @@ class Hamiltonian:
     def create_1d_hamiltonian(self, t, o, N, blocks=True):
         """Return blocks or full matrix for 1D wire."""
         if blocks:
-            return ([sp.eye(1) * o] * N), ([sp.eye(1) * t] * (N - 1))
+            return ([sp.eye(1) * o] * N), ([sp.eye(1) * -t] * (N - 1))
         else:
             A = np.zeros((N, N), dtype=complex)
             for i in range(N):
                 if i < N - 1:
-                    A[i, i + 1] = t
-                    A[i + 1, i] = t
+                    A[i, i + 1] = -t
+                    A[i + 1, i] = -t
                 A[i, i] = o
             return sp.csc_matrix(A)
     def quantum_point_contact(self, blocks=True):

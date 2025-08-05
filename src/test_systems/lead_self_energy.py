@@ -4,6 +4,7 @@ from scipy import linalg
 import scipy.sparse as spa
 from hamiltonian import Hamiltonian
 
+
 class LeadSelfEnergy():
     """
     Lead self-energy calculation using surface Green's functions.
@@ -13,7 +14,7 @@ class LeadSelfEnergy():
     def __init__(self, hamiltonian: Hamiltonian):
         #self.ds = device
         self.ham = hamiltonian
-        self.eta = 1e-6  # Small imaginary part for numerical stability
+        self.eta = 1e-12  # Small imaginary part for numerical stability
         
     def _add_eta(self, E):
         """Add small imaginary part if energy is real for numerical stability"""
@@ -47,84 +48,92 @@ class LeadSelfEnergy():
             return self._transfer_surface_gf(E, H00, H01, tolerance, iteration_max)
         else:
             raise ValueError(f"Unknown method: {method}")
-    
-    def _sancho_rubio_surface_gf(self, E, H00, H01, tolerance=1e-6, iteration_max=1000):
+    def _sancho_rubio_surface_gf(self, E, H00, H01, S00=None, iter_max=100, TOL=1e-10):
         """
-        Standard Sancho-Rubio algorithm for surface Green's function.
-        Based on TRAN_Calc_SurfGreen_Normal from OpenMX.
+        Jiezi surface_gf algorithm translated to use numpy arrays
         """
         n = H00.shape[0]
         I = np.eye(n, dtype=complex)
         
-        # Convert to dense arrays for stability
+        # Handle overlap matrix
+        if S00 is None:
+            S00 = I
+            
+        # Convert to dense if needed
         if hasattr(H00, 'toarray'):
             H00 = H00.toarray()
         if hasattr(H01, 'toarray'):
             H01 = H01.toarray()
-            
+        if hasattr(S00, 'toarray'):
+            S00 = S00.toarray()
+        
+        iter_c = 0
         H10 = H01.conj().T
+        alpha = H10.copy()
+        beta = H10.conj().T  # H10.dagger()
+        epsilon = H00.copy()
+        epsilon_s = H00.copy()
+        E = I * E
         
-        # Initialize
-        es0 = E * I - H00  # Surface term
-        e00 = E * I - H00  # Bulk term
-        alp = H01.copy()   # Forward coupling
-        bet = H10.copy()   # Backward coupling
-        
-        # Initial surface Green's function
-        try:
-            gr = linalg.solve(es0, I)
-        except linalg.LinAlgError:
-            gr = linalg.pinv(es0)
-        
-        gr_old = gr.copy()
-        
-        for iteration in range(1, iteration_max):
-            try:
-                # Invert (E*I - e00)
-                inv_e00 = linalg.solve(e00, I)
-            except linalg.LinAlgError:
-                inv_e00 = linalg.pinv(e00)
+        while iter_c < iter_max:
+            iter_c += 1
             
-            # Update surface term
-            temp1 = inv_e00 @ bet
-            temp2 = alp @ temp1
-            es0 = es0 - temp2
+            # inv_term = (w - epsilon)^(-1)
+            inv_term = np.linalg.solve(E - epsilon, I)
             
-            # Update bulk term  
-            temp3 = inv_e00 @ alp
-            temp4 = bet @ temp3
-            temp5 = alp @ temp1
-            e00 = e00 - temp4 - temp5
+            # alpha_new = alpha * inv_term * alpha
+            alpha_new = alpha @ inv_term @ alpha
             
-            # Update coupling terms
-            alp = alp @ temp3
-            bet = bet @ temp1
+            # beta_new = beta * inv_term * beta  
+            beta_new = beta @ inv_term @ beta
             
-            # Calculate new surface Green's function
-            try:
-                gr = linalg.solve(es0, I)
-            except linalg.LinAlgError:
-                gr = linalg.pinv(es0)
+            # epsilon_new = epsilon + alpha*inv_term*beta + beta*inv_term*alpha
+            epsilon_new = epsilon + alpha @ inv_term @ beta + beta @ inv_term @ alpha
             
-            # Check convergence
-            diff = gr - gr_old
-            rms = np.sqrt(np.max(np.abs(diff)**2))
+            # epsilon_s_new = epsilon_s + alpha*inv_term*beta
+            epsilon_s_new = epsilon_s + alpha @ inv_term @ beta
             
-            if rms < tolerance:
+            # Check convergence using Frobenius norm
+            convergence_check = np.linalg.norm(alpha_new, ord='fro')
+            
+            if convergence_check < TOL:
+                G00 = np.linalg.solve(E - epsilon_s_new, I)
+                GBB = np.linalg.solve(E - epsilon_new, I)
                 break
-                
-            gr_old = gr.copy()
+            else:
+                alpha = alpha_new.copy()
+                beta = beta_new.copy() 
+                epsilon = epsilon_new.copy()
+                epsilon_s = epsilon_s_new.copy()
         
-        if iteration >= iteration_max - 1:
-            print(f"Warning: Surface GF did not converge after {iteration_max} iterations, rms={rms}")
+        if iter_c >= iter_max:
+            print(f"Warning: Jiezi Surface GF did not converge after {iter_max} iterations")
             
-        return gr
+        return G00
+
+    
+    def _analytical_1d_surface_gf(self, E):
+        """
+        Analytical surface Green's function for 1D chain to match MATLAB formula.
+        For H00=0, H01=-1: Uses the same branch choice as arccos method.
+        """
+        # MATLAB approach: k = arccos(1 - E/2t) with t=1
+        # This gives the same result as -exp(ik) where k comes from arccos
+        ck = 1 - E / (2 * 1.0)  # cos(k)
+        ck = np.clip(ck, -1, 1)  # Ensure valid range for arccos
+        k = np.arccos(ck)
+        
+        # Surface Green's function: G_s = -exp(ik) / t = -exp(ik)
+        G_surface = -np.exp(1j * k)
+        
+        return np.array([[G_surface]], dtype=complex)
     
     def _iterative_surface_gf(self, E, H00, H01, tolerance=1e-6, iteration_max=1000):
         """
         Alternative iterative method for surface Green's function.
         Based on TRAN_Calc_SurfGreen_Multiple_Inverse from OpenMX.
         """
+        raise Exception("this is broken")
         n = H00.shape[0]
         I = np.eye(n, dtype=complex)
         
@@ -271,9 +280,10 @@ class LeadSelfEnergy():
         Vsd = (self.ham.Vs + self.ham.Vd)
 
         if side == "left":
-            E_lead = E - self.ham.Vs* - (self.ham.Ef+Vsd/2)
+            E_lead = E - self.ham.mu1#- self.ham.Vs - (self.ham.Ef+Vsd/2)
+            
         else:  # right
-            E_lead = E - self.ham.Vd*0 - (self.ham.Ef-Vsd/2)
+            E_lead = E - self.ham.mu2 #- self.ham.Vd - (self.ham.Ef-Vsd/2)
 
         # Calculate surface Green's function
         try:
