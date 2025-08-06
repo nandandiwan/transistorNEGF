@@ -45,6 +45,12 @@ class GreensFunction:
         self.eta = 1e-6
         self.energy_grid = energy_grid
         self.dE = self.energy_grid[1] - self.energy_grid[0]
+        
+        self.additional_self_energies = False
+        # Büttiker probe parameters
+        self.buttiker_probe_enabled = False
+        self.buttiker_probe_strength = 0.00025  # Default strength from MATLAB script
+        self.buttiker_probe_position = None  # Will be set to middle by default
         # The sparse_threshold is now handled by the smart_inverse function
         # self.sparse_threshold = 0.1
 
@@ -60,6 +66,77 @@ class GreensFunction:
         if np.iscomplexobj(E):
             return E
         return E + 1j * self.eta
+
+    def enable_buttiker_probe(self, strength=0.00025, position=None):
+        """
+        Enable Büttiker probe for broadening resonances.
+        
+        Args:
+            strength (float): Imaginary self-energy strength (positive)
+            position (int): Position index to place probe (None for middle)
+        """
+        self.buttiker_probe_enabled = True
+        self.buttiker_probe_strength = strength
+        self.buttiker_probe_position = position
+        self.additional_self_energies = True
+
+    def disable_buttiker_probe(self):
+        """Disable Büttiker probe."""
+        self.buttiker_probe_enabled = False
+        self.additional_self_energies = False
+
+    def _compute_buttiker_probe_self_energy(self, E):
+        """
+        Compute Büttiker probe self-energy matrix.
+        
+        Returns:
+            scipy.sparse matrix: Büttiker probe self-energy
+        """
+        if not self.buttiker_probe_enabled:
+            return None
+            
+        n = self.ham.get_num_sites()
+        position = self.buttiker_probe_position
+        if position is None:
+            position = n // 2  # Middle of device
+            
+        # Create sparse matrix with imaginary self-energy at probe position
+        Sigma_bp = sp.lil_matrix((n, n), dtype=complex)
+        Sigma_bp[position, position] = -1j * self.buttiker_probe_strength
+        
+        return Sigma_bp.tocsc()
+
+    def _compute_buttiker_probe_transmission_correction(self, E, G_R, Gamma_L, Gamma_R):
+        """
+        Compute transmission correction for Büttiker probe using the formula:
+        T_corrected = T12 + (T13 * T23) / (T12 + T23)
+        
+        where:
+        T12 = trace(Gamma_L @ G_R @ Gamma_R @ G_A)  # Direct transmission
+        T13 = trace(Gamma_L @ G_R @ Gamma_bp @ G_A)  # Left to probe
+        T23 = trace(Gamma_R @ G_R @ Gamma_bp @ G_A)  # Right to probe
+        """
+        if not self.buttiker_probe_enabled:
+            return None
+            
+        # Büttiker probe broadening function
+        Sigma_bp = self._compute_buttiker_probe_self_energy(E)
+        Gamma_bp = 1j * (Sigma_bp - Sigma_bp.conj().T)
+        
+        G_A = G_R.conj().T
+        
+        # Calculate transmission coefficients
+        T12 = np.real(np.trace(Gamma_L @ G_R @ Gamma_R @ G_A))  # Direct
+        T13 = np.real(np.trace(Gamma_L @ G_R @ Gamma_bp @ G_A))  # Left to probe
+        T23 = np.real(np.trace(Gamma_R @ G_R @ Gamma_bp @ G_A))  # Right to probe
+        
+        # Corrected transmission using Büttiker probe formula
+        if T12 + T23 != 0:
+            T_corrected = T12 + (T13 * T23) / (T12 + T23)
+        else:
+            T_corrected = T12
+            
+        return T_corrected
 
     def compute_central_greens_function(self, E, ky=0,compute_lesser=True,
                                         use_rgf=True, self_energy_method=None, equilibrium=False):
@@ -105,7 +182,12 @@ class GreensFunction:
         Sigma_L_full = Sigma_L_full.tocsc()
         Sigma_R_full = Sigma_R_full.tocsc()
         
+        # Add Büttiker probe self-energy if enabled
         H_eff = H + Sigma_L_full + Sigma_R_full
+        if self.additional_self_energies and self.buttiker_probe_enabled:
+            Sigma_bp = self._compute_buttiker_probe_self_energy(E)
+            H_eff += Sigma_bp
+        
         A = E * sp.identity(n, dtype=complex, format='csc') - H_eff
 
         # Use smart_inverse for efficient computation
@@ -311,21 +393,32 @@ class GreensFunction:
         """
         Compute the transmission coefficient T(E) using the Caroli formula.
         T(E) = Tr[Γ_L * G_R * Γ_R * G_A]
+        
+        If Büttiker probe is enabled, uses the corrected formula:
+        T_corrected = T12 + (T13 * T23) / (T12 + T23)
         """
         # Get Green's function and broadening matrices
         G_R, Gamma_L, Gamma_R = self.compute_central_greens_function(
             E,ky=ky, use_rgf=False, self_energy_method=self_energy_method, compute_lesser=False
         )
 
-        # Convert to dense arrays for matrix multiplication
-        G_R_dense = G_R.toarray()
-        G_A_dense = G_R_dense.conj().T
-        Gamma_L_dense = Gamma_L.toarray()
-        Gamma_R_dense = Gamma_R.toarray()
+        if self.buttiker_probe_enabled:
+            G_R_dense = G_R.toarray()
+            G_A_dense = G_R_dense.conj().T
+            Gamma_L_dense = Gamma_L.toarray()
+            Gamma_R_dense = Gamma_R.toarray()
+            # Use Büttiker probe corrected transmission
+            T = self._compute_buttiker_probe_transmission_correction(E, G_R_dense, Gamma_L_dense, Gamma_R_dense)
+        else:
+            # Standard transmission calculation
+            # Convert to dense arrays for matrix multiplication
+            G_R_dense = G_R.toarray()
+            G_A_dense = G_R_dense.conj().T
+            Gamma_L_dense = Gamma_L.toarray()
+            Gamma_R_dense = Gamma_R.toarray()
 
-        T_matrix = Gamma_L_dense @ G_R_dense @ Gamma_R_dense @ G_A_dense
-        
-        T = np.real(np.trace(T_matrix))
+            T_matrix = Gamma_L_dense @ G_R_dense @ Gamma_R_dense @ G_A_dense
+            T = np.real(np.trace(T_matrix))
         
         return max(T, 0) 
 
@@ -335,7 +428,60 @@ class GreensFunction:
         """
         # Conductance in units of G0 = 2e^2/h is simply the transmission at the Fermi energy.
         T = self.compute_transmission(E=E_F, self_energy_method=self_energy_method)
-        return T    
+        return T
+
+    def compute_current_landauer(self, V_list, E_range=(-0.2, 0.8), N_E=101, self_energy_method=None):
+        """
+        Compute current using Landauer-Büttiker formula for a voltage range.
+        
+        I = (q^2 / (2π ℏ)) ∫ T(E) [f_L(E) - f_R(E)] dE
+        
+        Args:
+            V_list: List of bias voltages to calculate
+            E_range: Energy integration range (E_min, E_max)
+            N_E: Number of energy points
+            self_energy_method: Method for self-energy calculation
+            
+        Returns:
+            list: Current values for each voltage
+        """
+        # Physical constants (from MATLAB script)
+        hbar = 1.0545718e-34  # J⋅s
+        q = 1.60217662e-19    # C
+        IE = q**2 / (np.pi * hbar)  # Conductance quantum factor
+        
+        Ef = self.ham.Ef  # Fermi energy in eV
+        kT = self.ham.kbT_eV  # Thermal energy in eV
+        
+        # Energy grid
+        E_min, E_max = E_range
+        E = np.linspace(E_min, E_max, N_E)
+        dE = E[1] - E[0]
+        
+        current_list = []
+        
+        for V in V_list:
+            # Chemical potentials
+            mu1 = Ef + V/2  # Source
+            mu2 = Ef - V/2  # Drain
+            
+            # Set the voltages in the Hamiltonian
+            self.ham.set_voltage(Vs=V/2, Vd=-V/2)
+            
+            # Fermi distributions
+            f1 = 1.0 / (1.0 + np.exp((E - mu1) / kT))
+            f2 = 1.0 / (1.0 + np.exp((E - mu2) / kT))
+            
+            # Integrate current
+            I = 0.0
+            for k, Ek in enumerate(E):
+                T_k = self.compute_transmission(Ek, self_energy_method=self_energy_method)
+                I += dE * IE * T_k * (f1[k] - f2[k])
+            
+            current_list.append(I)
+            print(f"V = {V:.3f} V, I = {I*1e6:.4f} μA")
+        
+        return current_list    
     
     def _current_worker(self, param):
         """Worker for multiprocessing: computes current for (E, ky)."""

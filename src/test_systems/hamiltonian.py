@@ -490,4 +490,79 @@ class Hamiltonian:
     def register_lead(self, name, func):
         """Register a new lead function."""
         self.lead_registry[name] = func
+
+    def setup_ballistic_device(self, NS=15, NC=30, ND=15):
+        """
+        Setup ballistic device (no barriers) as in MATLAB script.
+        """
+        self.name = "one_d_wire"
+        self.N = NS + NC + ND
+        self.clear_potential()  # No barriers
+        print(f"Setup ballistic device: NS={NS}, NC={NC}, ND={ND}, Total={self.N}")
+
+    def setup_tunneling_device(self, NS=23, NC=4, ND=23, barrier_height=0.4):
+        """
+        Setup tunneling barrier device as in MATLAB script.
+        """
+        self.name = "one_d_wire"
+        self.N = NS + NC + ND
+        
+        # Set uniform barrier in channel region
+        self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(self.N)]
+        for i in range(NS, NS + NC):
+            self.potential[i] = sp.eye(self.num_orbitals) * barrier_height
+            
+        print(f"Setup tunneling device: NS={NS}, NC={NC}, ND={ND}, barrier={barrier_height} eV")
+
+    def setup_resonant_tunneling_device(self, NS=15, NC=16, ND=15, barrier_height=0.4, barrier_width=4):
+        """
+        Setup resonant tunneling device (double barrier) as in MATLAB script.
+        UB=[zeros(NS,1);0.4*ones(4,1);zeros(NC-8,1);0.4*ones(4,1);zeros(ND,1)]
+        """
+        self.name = "one_d_wire"
+        self.N = NS + NC + ND
+        
+        # Initialize potential
+        self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(self.N)]
+        
+        # First barrier: positions NS to NS+barrier_width-1
+        for i in range(NS, NS + barrier_width):
+            self.potential[i] = sp.eye(self.num_orbitals) * barrier_height
+            
+        # Second barrier: positions NS+NC-barrier_width to NS+NC-1
+        for i in range(NS + NC - barrier_width, NS + NC):
+            self.potential[i] = sp.eye(self.num_orbitals) * barrier_height
+            
+        print(f"Setup resonant tunneling device: NS={NS}, NC={NC}, ND={ND}")
+        print(f"Double barriers: width={barrier_width}, height={barrier_height} eV")
+
+    def apply_bias_potential(self, V):
+        """
+        Apply bias potential as in MATLAB script:
+        U1 = V * [0.5*ones(1,NS) linspace(0.5,-0.5,NC) -0.5*ones(1,ND)]
+        """
+        NS = 15  # Assuming standard device structure
+        NC = self.N - 30  # Channel length
+        ND = 15
+        
+        if self.potential is None:
+            self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(self.N)]
+        
+        # Source region: V/2
+        for i in range(NS):
+            if i < len(self.potential):
+                self.potential[i] += sp.eye(self.num_orbitals) * (V * 0.5)
+        
+        # Channel region: linear drop from V/2 to -V/2
+        for i in range(NS, NS + NC):
+            if i < len(self.potential):
+                # Linear interpolation
+                x = (i - NS) / (NC - 1) if NC > 1 else 0
+                V_local = V * (0.5 - x)
+                self.potential[i] += sp.eye(self.num_orbitals) * V_local
+        
+        # Drain region: -V/2
+        for i in range(NS + NC, self.N):
+            if i < len(self.potential):
+                self.potential[i] += sp.eye(self.num_orbitals) * (V * (-0.5))
         
