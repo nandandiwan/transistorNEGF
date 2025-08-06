@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import scipy.sparse as sp
 import scipy.constants as spc
@@ -24,6 +25,7 @@ class Hamiltonian:
         self.mu1 = 0.1 # chemical potential at left
         self.mu2 = 0.1  # chemical potential at right 
         self.Ef = 0.1
+        
        
         self.W = 5   # Width of the QPC
         self.L = 10  # Length of the QPC
@@ -47,6 +49,16 @@ class Hamiltonian:
         self.lead_registry = {}
         
         self.potential = None
+        
+        self.mock_potential = True # True until poisson solver is in place
+        self.middle_third = True # there's a sort of 
+        if (self.name != "one_d_wire"): # base linear potential for graphene is not in place
+            self.mock_potential = False
+        
+        if (self.name == "zigzag"):
+
+            self.unit_cell = GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
+            
     
     def get_num_sites(self):
         if (self.name == "one_d_wire" or self.name == "modified_one_d"):
@@ -61,8 +73,8 @@ class Hamiltonian:
         self.Vd = Vd
         self.Vg = Vg
         
-        self.mu1 += self.Vs
-        self.mu2 += self.Vd
+        self.mu1 = self.Vs + self.Ef
+        self.mu2 = self.Vd + self.Ef
     def one_d_wire(self, blocks=True):
         """Return blocks or full matrix for 1D wire."""
         t, o, N = self.t, self.o, self.N
@@ -225,7 +237,7 @@ class Hamiltonian:
                         if np.allclose(atom_in_l0.pos(), shifted_neighbor_pos, atol=1e-5):
                             j = idx
                             if delta == (0,1,0) or delta == (0,-1,0): # only those that leave the unit cell 
-                                H1[i, j] = t * np.exp(2 * np.pi * ky * 1j * delta[1])
+                                H1[i, j] = t * np.exp(2 * np.pi * ky * 1j * delta[1] / 3)
                             else:
                                 H1[i, j] = t 
                             
@@ -254,7 +266,7 @@ class Hamiltonian:
         return diagonal_blocks, off_diagonal_blocks
         
 
-    def create_hamiltonian(self, blocks=True, ky= 0):
+    def create_hamiltonian(self, blocks=True, ky= 0, no_pot = False):
         """
         General interface to get the Hamiltonian for the specified device type.
         """
@@ -271,7 +283,8 @@ class Hamiltonian:
         else:
             # You can add other device types like "one_d_wire" here.
             raise ValueError(f"Unknown device type: {self.name}")
-        
+        if (no_pot):
+            return H
         H = self.add_potential(H, blocks)
         return H
 
@@ -300,7 +313,7 @@ class Hamiltonian:
             return H00, H01, H10
         
         if self.name == "zigzag":
-            diag, offdiag = self.create_hamiltonian(True, ky)
+            diag, offdiag = self.create_hamiltonian(True, ky, no_pot=True)
             H00 = diag[0]
             H01 = offdiag[0]
             H10 = H01.T.conj()
@@ -313,13 +326,33 @@ class Hamiltonian:
     def get_potential(self, blocks: bool):
         if self.potential is None:
             return None
+        pot = copy.deepcopy(self.potential)
+        
+        if (self.mock_potential):
+            N = len(pot)
+            n1 = N // 3
+            n2 = 2 * N // 3
+            for i in range(len(pot)):
+                if self.middle_third:
+                    if i < n1:
+                        V = self.Vs
+                    elif i >= n2:
+                        V = self.Vd
+                    else:
+                        ramp_i = i - n1
+                        ramp_len = n2 - n1
+                        V = self.Vs + (self.Vd - self.Vs) * ramp_i / (ramp_len - 1)
+                else:
+                    V = self.Vs + (self.Vd - self.Vs) * i / (len(pot) - 1)
+                
+                pot[i] += sp.eye(pot[i].shape[0]) * V
 
         if blocks:
-            return self.potential
+            return pot
         else:
             # Collect all diagonals in a list
             diag_list = []
-            for block in self.potential:
+            for block in pot:
                 diag_list.append(np.diag(block.toarray()))
             if len(diag_list) == 0:
                 return None
@@ -440,6 +473,14 @@ class Hamiltonian:
         self.Vs = 0.0
         self.Vd = 0.0
         self.Vg = 0.0
+        self.set_voltage()
+        
+    def set_params(self, *args):
+        if (self.name == "zigzag"):
+            Nx, Ny = args
+            self.Nx = Nx
+            self.Ny = Ny 
+            self.unit_cell = GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
             
     
     def register_hamiltonian(self, name, func):

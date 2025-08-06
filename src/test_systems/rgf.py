@@ -12,8 +12,9 @@ import multiprocessing
 import numpy as np
 import scipy.sparse as sp
 from scipy.linalg import inv 
-from scipy.integrate import quad_vec
 import scipy.constants as spc
+from scipy.integrate import quad_vec
+
 import warnings
 
 
@@ -25,7 +26,7 @@ from utils import sparse_diag_product
 
 class GreensFunction:
     """
-    Class which deals with greens function and associated properties
+    Recursive Green's Function (RGF) implementation optimized with a smart inversion utility.
     """
 
     def __init__(self, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio", energy_grid = np.linspace(-5,5, 300)):
@@ -41,17 +42,11 @@ class GreensFunction:
             self.k_space = np.array([0])
         self.lead_self_energy = LeadSelfEnergy(hamiltonian)
         self.self_energy_method = self_energy_method
-        self.eta = 1e-12
+        self.eta = 1e-6
         self.energy_grid = energy_grid
         self.dE = self.energy_grid[1] - self.energy_grid[0]
         # The sparse_threshold is now handled by the smart_inverse function
         # self.sparse_threshold = 0.1
-        
-        self.boltzmann = False
-        self.V = None
-        self.Efn = None
-        self.Ef = None
-
 
     def fermi_distribution(self, E, mu):
         """Fermi-Dirac distribution function."""
@@ -125,9 +120,8 @@ class GreensFunction:
         if not compute_lesser:
             return G_R, Gamma_L, Gamma_R
 
-        Vsd = (self.ham.Vs + self.ham.Vd)
-        f_L = self.fermi_distribution(np.real(E) - (self.ham.Ef+Vsd/2), self.ham.Vs)
-        f_R = self.fermi_distribution(np.real(E) - (self.ham.Ef-Vsd/2), self.ham.Vd)
+        f_L = self.fermi_distribution(np.real(E), self.ham.mu1)
+        f_R = self.fermi_distribution(np.real(E), self.ham.mu2)
 
         Sigma_lesser = sp.lil_matrix((n, n), dtype=complex)
         Sigma_lesser +=  Gamma_L * f_L
@@ -169,9 +163,8 @@ class GreensFunction:
         Gamma_L = 1j * (sigma_L - dagger(sigma_L))
         Gamma_R = 1j * (sigma_R - dagger(sigma_R))
 
-        Vsd = (self.ham.Vs + self.ham.Vd)
-        f_L = self.fermi_distribution(np.real(E) - (self.ham.Ef+Vsd/2), self.ham.Vs)
-        f_R = self.fermi_distribution(np.real(E) - (self.ham.Ef-Vsd/2), self.ham.Vd)
+        f_L = self.fermi_distribution(np.real(E), self.ham.mu1)
+        f_R = self.fermi_distribution(np.real(E), self.ham.mu2)
 
         sigma_L_lesser = Gamma_L * f_L *1j
         sigma_R_lesser = Gamma_R * f_R * 1j
@@ -347,23 +340,23 @@ class GreensFunction:
     def _current_worker(self, param):
         """Worker for multiprocessing: computes current for (E, ky)."""
         E, ky, self_energy_method, use_rgf = param
-        Vsd = (self.ham.Vs + self.ham.Vd)
-        f_s = self.fermi_distribution(np.real(E) - (self.ham.Ef+Vsd/2), self.ham.Vs)
-        f_d = self.fermi_distribution(np.real(E) - (self.ham.Ef-Vsd/2), self.ham.Vd)
+        
         if not use_rgf:
             transmission = self.compute_transmission(E, ky, self_energy_method)
 
-
+            f_s = self.fermi_distribution(E, self.ham.mu1)
+            f_d = self.fermi_distribution(E, self.ham.mu2)
             IL_contrib = transmission * f_s
             IR_contrib = transmission * f_d
             current_contribution = self.dE * (self.ham.q**2 / (2 * np.pi * spc.hbar)) * (IL_contrib - IR_contrib)
             
             return current_contribution
-        """The code below is likely incorrect"""
+        
         G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
             E, ky=ky, use_rgf=True, self_energy_method=self_energy_method, compute_lesser=True
         )
-
+        f_s = self.fermi_distribution(E, self.ham.mu1)
+        f_d = self.fermi_distribution(E, self.ham.mu2)
         sigma_less_left = Gamma_L * f_s * 1j
         sigma_less_right = Gamma_R * f_d * 1j
         A_matrix = np.diag(1j * (G_R - G_R.conj()))
@@ -390,7 +383,7 @@ class GreensFunction:
         # Sum over all energy and ky points
         total_current = np.sum(results)
         return total_current
-    
+
     def compute_charge_density(self, self_energy_method="sancho_rubio", use_rgf=True):
         E_list = self.energy_grid
         ky_list = self.k_space

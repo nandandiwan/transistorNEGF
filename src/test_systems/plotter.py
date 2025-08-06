@@ -73,6 +73,7 @@ class Plotter:
             Id_list = []
             for Vs in Vs_list:
                 ham.set_voltage(Vs=Vs)
+                print(ham.Vs, ham.Vd, ham.mu1, ham.mu2)
                 Id = gf.compute_total_current() if hasattr(gf, 'compute_total_current') else None
                 Id_list.append(Id)
             plt.figure()
