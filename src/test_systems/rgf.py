@@ -406,11 +406,8 @@ class GreensFunction:
     
     def compute_transmission(self, E, ky=0, self_energy_method=None):
         """
-        Compute the transmission coefficient T(E) using the Caroli formula.
-        T(E) = Tr[Γ_L * G_R * Γ_R * G_A]
-        
-        If Büttiker probe is enabled, uses the corrected formula:
-        T_corrected = T12 + (T13 * T23) / (T12 + T23)
+
+        find transmission 
         """
         # Get Green's function and broadening matrices
         G_R, Gamma_L, Gamma_R = self.compute_central_greens_function(
@@ -449,7 +446,6 @@ class GreensFunction:
         """
         Compute current using Landauer-Büttiker formula for a voltage range.
         
-        I = (q^2 / (2π ℏ)) ∫ T(E) [f_L(E) - f_R(E)] dE
         
         Args:
             V_list: List of bias voltages to calculate

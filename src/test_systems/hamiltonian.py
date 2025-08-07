@@ -20,11 +20,20 @@ class Hamiltonian:
         self.Vs = 0.0  # Source voltage
         self.Vd = 0.0  # Drain voltage
         self.Vg = 0  # Gate voltage applied to the device region
-        self.num_orbitals = 1
-        self.N = 120
         self.mu1 = 0.0 # chemical potential at left
         self.mu2 = 0.0  # chemical potential at right 
         self.Ef = 0.0
+        
+        # one d
+        self.num_orbitals = 1
+        self.N = 120
+        # C_ox
+        self.C_ox = 1e-6 
+        # gate width
+        self.gate = False
+        self.gate_factor = 0.25
+        self.one_d_dx = 1e-9
+        
         
        
         self.W = 5   # Width of the QPC
