@@ -22,9 +22,9 @@ class Hamiltonian:
         self.Vg = 0  # Gate voltage applied to the device region
         self.num_orbitals = 1
         self.N = 120
-        self.mu1 = 0.1 # chemical potential at left
-        self.mu2 = 0.1  # chemical potential at right 
-        self.Ef = 0.1
+        self.mu1 = 0.0 # chemical potential at left
+        self.mu2 = 0.0  # chemical potential at right 
+        self.Ef = 0.0
         
        
         self.W = 5   # Width of the QPC
@@ -41,7 +41,8 @@ class Hamiltonian:
         self.Nx = 10
         self.Ny = 10
         self.periodic = periodic
-        
+        self.H0 = None
+        self.T0 = None
         self.relevant_parameters = relevant_parameters
         
         #modified oned
@@ -65,8 +66,12 @@ class Hamiltonian:
             return self.N
         elif (self.name == "qpc"):
             return self.W * self.L
+        elif (self.name == "zigzag"):
+            if self.unit_cell is None:
+                self.unit_cell = GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
+            return len(self.unit_cell.structure)
         else:
-            return self.num_orbitals * len(self.unit_cell.ATOM_POSITIONS)
+            return self.num_orbitals * len(self.unit_cell.structure)
         
     def set_voltage(self, Vs=0, Vd=0, Vg=0):
         self.Vs = Vs
@@ -184,89 +189,201 @@ class Hamiltonian:
                         A[idx_next, idx] = t
             return sp.csc_matrix(A)
     
-    def zig_zag_hamiltonian(self, blocks, t=-1.0, onsite_potential=0.0, ky = 0.0):
+    def zig_zag_hamiltonian(self, blocks, t=-2.7, onsite_potential=0.0, ky=0.0):
         """
-        Builds the full tight-binding Hamiltonian for the nanoribbon structure.
+        Builds the tight-binding Hamiltonian for the zigzag nanoribbon structure.
 
         Args:
+            blocks (bool): Whether to return block format or full matrix
             t (float): The nearest-neighbor hopping parameter.
             onsite_potential (float): The on-site energy for all atoms.
+            ky (float): Bloch momentum for periodic case (along x-direction)
 
         Returns:
-            scipy.sparse.csr_matrix: The full Hamiltonian matrix.
+            Hamiltonian in block format or full matrix
         """
         if (not self.periodic and ky != 0):
             raise ValueError("cant have a nonzero ky and a non periodic lattice")
         if self.unit_cell is None:
-            self.unit_cell=  GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
+            self.unit_cell = GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
+        
         unitCell = self.unit_cell        
         
-        num_atoms_total = len(unitCell.structure)
-        num_atoms_layer = len(unitCell.layer)
-        
-        # Create a mapping from atom object to its index in the full structure list
-        atom_to_idx = {atom: i for i, atom in enumerate(unitCell.structure)}
-        
-        # --- 1. Build the Onsite Block (H0) ---
-        # Describes connections within one layer (unit cell)
-        H0 = np.zeros((num_atoms_layer, num_atoms_layer), dtype=complex)
-        
-        # Create a mapping for just the first layer
-        layer_atom_to_idx = {atom: i for i, atom in enumerate(unitCell.layer)}
-        
-        for i, atom in enumerate(unitCell.layer):
-            H0[i, i] = onsite_potential
-            # Find neighbors that are also in the first layer
-            for neighbor, delta, l, m, n in unitCell.neighbors[atom]:
-                if neighbor in layer_atom_to_idx:
-                    j = layer_atom_to_idx[neighbor]
-                    H0[i, j] = t
+        if self.periodic:
+            H, T0 = self._create_armchair_hamiltonian_periodic(t=t)
+            H_eff = H + T0 * np.exp(np.pi * ky * 1j) + T0.conj().T * np.exp(-np.pi * ky * 1j)
+            if (not blocks):
+                return H_eff
+            else:
+                return self._convert_to_blocks(H_eff, 2)
+            
+        else:
+            num_atoms_total = len(unitCell.structure)
+            num_atoms_layer = len(unitCell.layer)
+            
+            # Create a mapping from atom object to its index in the full structure list
+            atom_to_idx = {atom: i for i, atom in enumerate(unitCell.structure)}
+            
+            # --- 1. Build the Onsite Block (H0) ---
+            # Describes connections within one layer (unit cell)
+            H0 = np.zeros((num_atoms_layer, num_atoms_layer), dtype=complex)
+            
+            # Create a mapping for just the first layer
+            layer_atom_to_idx = {atom: i for i, atom in enumerate(unitCell.layer)}
+            
+            for i, atom in enumerate(unitCell.layer):
+                H0[i, i] = onsite_potential
+                # Find neighbors that are also in the first layer
+                for neighbor, delta, l, m, n in unitCell.neighbors[atom]:
+                    if neighbor in layer_atom_to_idx:
+                        j = layer_atom_to_idx[neighbor]
+                        H0[i, j] = t
 
 
-        H1 = np.zeros((num_atoms_layer, num_atoms_layer), dtype=complex)
+            H1 = np.zeros((num_atoms_layer, num_atoms_layer), dtype=complex)
 
-        layer_1_atoms = set(unitCell.structure[num_atoms_layer : 2 * num_atoms_layer])
+            layer_1_atoms = set(unitCell.structure[num_atoms_layer : 2 * num_atoms_layer])
 
-        for i, atom_in_layer0 in enumerate(unitCell.layer):
-            for neighbor, delta, l, m, n in unitCell.neighbors[atom_in_layer0]:
-                
-                if neighbor in layer_1_atoms:
-                    shifted_neighbor_pos = (neighbor.x - (unitCell.sin60 * 2), neighbor.y, neighbor.z)
+            for i, atom_in_layer0 in enumerate(unitCell.layer):
+                for neighbor, delta, l, m, n in unitCell.neighbors[atom_in_layer0]:
                     
-                    for atom_in_l0, idx in layer_atom_to_idx.items():
-                        if np.allclose(atom_in_l0.pos(), shifted_neighbor_pos, atol=1e-5):
-                            j = idx
-                            if delta == (0,1,0) or delta == (0,-1,0): # only those that leave the unit cell 
-                                H1[i, j] = t * np.exp(2 * np.pi * ky * 1j * delta[1] / 3)
-                            else:
-                                H1[i, j] = t 
-                            
-                            break
-        H0_sparse = sp.csr_matrix(H0, dtype=complex)
-        H1_sparse = sp.csr_matrix(H1, dtype=complex)
+                    if neighbor in layer_1_atoms:
+                        shifted_neighbor_pos = (neighbor.x - (unitCell.sin60 * 2), neighbor.y, neighbor.z)
+                        
+                        for atom_in_l0, idx in layer_atom_to_idx.items():
+                            if np.allclose(atom_in_l0.pos(), shifted_neighbor_pos, atol=1e-5):
+                                j = idx
+                                if delta == (0,1,0) or delta == (0,-1,0): # only those that leave the unit cell 
+                                    H1[i, j] = t * np.exp(2 * np.pi * ky * 1j * delta[1] / 3)
+                                else:
+                                    H1[i, j] = t 
+                                
+                                break
+            H0_sparse = sp.csr_matrix(H0, dtype=complex)
+            H1_sparse = sp.csr_matrix(H1, dtype=complex)
+            
+            # Create a list of the diagonal blocks (all H0)
+            diagonal_blocks = [H0_sparse] * unitCell.num_layers_x
+            off_diagonal_blocks = [H1_sparse] * (unitCell.num_layers_x - 1)
+            if (not blocks):
+                H_main_diag = sp.block_diag(diagonal_blocks, format='csc', dtype=complex)
+                num_blocks = len(diagonal_blocks)
+                block_rows, block_cols = diagonal_blocks[0].shape
+                full_dim = num_blocks * block_rows
+
+                H_upper = sp.lil_matrix((full_dim, full_dim), dtype=complex)
+
+                for i, block in enumerate(off_diagonal_blocks):
+                    row_start = i * block_rows
+                    col_start = (i + 1) * block_cols
+                    H_upper[row_start : row_start + block_rows, col_start : col_start + block_cols] = block
+                H_upper = H_upper.tocsc()
+                H_full = H_main_diag + H_upper + H_upper.conj().T
+                return H_full
+            return diagonal_blocks, off_diagonal_blocks
+    def _create_armchair_hamiltonian_periodic(self, t=-2.7):
+        """
+        Constructs the on-site (H) and coupling (T0) Hamiltonian matrices
+        for an armchair graphene nanoribbon unit cell directly.
         
-        # Create a list of the diagonal blocks (all H0)
-        diagonal_blocks = [H0_sparse] * unitCell.num_layers_x
-        off_diagonal_blocks = [H1_sparse] * (unitCell.num_layers_x - 1)
-        if (not blocks):
-            H_main_diag = sp.block_diag(diagonal_blocks, format='csc', dtype=complex)
-            num_blocks = len(diagonal_blocks)
-            block_rows, block_cols = diagonal_blocks[0].shape
-            full_dim = num_blocks * block_rows
+        Returns:
+            (sp.csc_matrix, sp.csc_matrix): A tuple containing H and T0.
+        """
+        n = self.Nx
+        num_atoms = 4 * n + 2
+        
 
-            H_upper = sp.lil_matrix((full_dim, full_dim), dtype=complex)
+        H_rows = []
+        H_cols = []
 
-            for i, block in enumerate(off_diagonal_blocks):
-                row_start = i * block_rows
-                col_start = (i + 1) * block_cols
-                H_upper[row_start : row_start + block_rows, col_start : col_start + block_cols] = block
-            H_upper = H_upper.tocsc()
-            H_full = H_main_diag + H_upper + H_upper.conj().T
-            return H_full
+        for i in range(num_atoms):
+            neighbors = []
+            if (i != 0 and i != 1 and i != 4 * n and i != (4*n + 1) and ((i-2) % 4) != 0 and (i - 3) % 4 != 0):
+                if (i % 2 == 0):
+                    neighbors = [i - 1, i + 1, i + 3]
+                else:
+                    neighbors = [i - 3, i + 1, i - 1]
+            else:
+                if (i == 0):
+                    neighbors = [1, 3]
+                elif (i == 1):
+                    neighbors = [0, 2]
+                elif (i == 4 * n):
+                    neighbors = [4*n + 1, 4 * n - 1]
+                elif (i == 4 * n + 1):
+                    neighbors = [4 * n, 4 * n - 2]
+                elif ((i - 2) % 4 == 0):
+                    neighbors = [i - 1, i + 3]
+                elif ((i - 3) % 4 == 0):
+                    neighbors = [i - 3, i + 1]
+                else:
+                    print(f"Unhandled case for atom index: {i}")
+                    raise ValueError("wrong amount")
+            
+            for neighbor in neighbors:
+                if 0 <= neighbor < num_atoms:
+                    H_rows.append(i)
+                    H_cols.append(neighbor)
+
+        H_data = np.full(len(H_rows), t, dtype=float)
+        H = sp.coo_matrix((H_data, (H_rows, H_cols)), shape=(num_atoms, num_atoms)).tocsc()
+
+        T0_rows = [4 * i - 2 for i in range(1, n + 1)]
+        T0_cols = [4 * i - 1 for i in range(1, n + 1)]
+        T0_data = np.full(n, t, dtype=float)
+        T0 = sp.coo_matrix((T0_data, (T0_rows, T0_cols)), shape=(num_atoms, num_atoms)).tocsc()
+        
+        return H, T0
+        
+    def _build_full_matrix_from_blocks(self, H0, H1, num_blocks):
+        """Build full Hamiltonian matrix from H0 and H1 blocks."""
+        block_size = H0.shape[0]
+        full_size = num_blocks * block_size
+        H_full = sp.lil_matrix((full_size, full_size), dtype=complex)
+        
+        # Add diagonal blocks (H0)
+        for i in range(num_blocks):
+            start_idx = i * block_size
+            end_idx = start_idx + block_size
+            H_full[start_idx:end_idx, start_idx:end_idx] = H0
+            
+        # Add off-diagonal blocks (H1 and H1†)
+        for i in range(num_blocks - 1):
+            start_i = i * block_size
+            end_i = start_i + block_size
+            start_j = (i + 1) * block_size
+            end_j = start_j + block_size
+            
+            H_full[start_i:end_i, start_j:end_j] = H1
+            H_full[start_j:end_j, start_i:end_i] = H1.conj().T
+            
+        return H_full.tocsr()
+        
+    def _convert_to_blocks(self, H_full, atoms_per_layer):
+        """Convert full matrix to block format."""
+        diagonal_blocks = []
+        off_diagonal_blocks = []
+        num_layers = (int) (H_full.shape[0] / atoms_per_layer)
+        
+        
+        for i in range(num_layers):
+            start_idx = i * atoms_per_layer
+            end_idx = start_idx + atoms_per_layer
+            
+            # Extract diagonal block
+            H_ii = H_full[start_idx:end_idx, start_idx:end_idx]
+            diagonal_blocks.append(sp.csr_matrix(H_ii))
+            
+            # Extract off-diagonal block (if not last layer)
+            if i < num_layers - 1:
+                start_j = (i + 1) * atoms_per_layer
+                end_j = start_j + atoms_per_layer
+                H_ij = H_full[start_idx:end_idx, start_j:end_j]
+                off_diagonal_blocks.append(sp.csr_matrix(H_ij))
+                
         return diagonal_blocks, off_diagonal_blocks
-        
 
-    def create_hamiltonian(self, blocks=True, ky= 0, no_pot = False):
+    def create_hamiltonian(self, blocks=True, ky=0, no_pot=False):
         """
         General interface to get the Hamiltonian for the specified device type.
         """
@@ -313,6 +430,7 @@ class Hamiltonian:
             return H00, H01, H10
         
         if self.name == "zigzag":
+
             diag, offdiag = self.create_hamiltonian(True, ky, no_pot=True)
             H00 = diag[0]
             H01 = offdiag[0]

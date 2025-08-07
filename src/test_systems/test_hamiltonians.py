@@ -22,8 +22,8 @@ def plot_ham(name : str, periodic: bool, new_ham = False, lead_func = None, ham_
     ham.Ef = 0
     
 
-    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-3, 3, 501))
-
+    gf = GreensFunction(hamiltonian=ham, energy_grid=np.linspace(-3, 3, 500))
+    gf.disable_buttiker_probe()
     # Configuration for plots
     config = {
         "dos": True,

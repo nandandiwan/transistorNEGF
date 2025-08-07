@@ -77,6 +77,8 @@ class GrapeheneZigZagCell:
             self.sublattice[atom] = (idx+1)%2
         
         self.neighbors, self.dangling = self.neighbors_and_dangling()
+        self.atom_to_idx = {atom: i for i, atom in enumerate(self.structure)}
+        self.idx_to_atom = {i: atom for i, atom in enumerate(self.structure)}
     def create_first_layer(self):
         layer = []
         for y in range(self.num_layers_y):
