@@ -47,7 +47,7 @@ class Atom:
     def __repr__(self):
         return f"Atom({self.x}, {self.y}, {self.z})"
     
-class GrapeheneZigZagCell:
+class GrapehenearmchairCell:
     a = 1
     sin60 = np.sqrt(3) / 2
     cos60 = 1/2 
@@ -83,7 +83,7 @@ class GrapeheneZigZagCell:
         layer = []
         for y in range(self.num_layers_y):
             delta = (0,3*y, 0)
-            new_atoms = map(lambda x: x.add(delta), GrapeheneZigZagCell.base)
+            new_atoms = map(lambda x: x.add(delta), GrapehenearmchairCell.base)
             layer.extend(new_atoms)
         
         return layer
@@ -125,19 +125,19 @@ class GrapeheneZigZagCell:
         for atom in self.structure:
             neighbors[atom] = []
             dangling_bonds[atom] = []
-            deltas = GrapeheneZigZagCell.deltas[self.get_sublattice(atom)]
+            deltas = GrapehenearmchairCell.deltas[self.get_sublattice(atom)]
             if (self.periodic):
                 for delta in deltas:
                     neighbor = atom.add(delta)
                     # there are no dangling bonds i think
                     if (not self.check_in_y_direction(neighbor)):
-                        l, m, n = GrapeheneZigZagCell.directionalCosine(delta)
+                        l, m, n = GrapehenearmchairCell.directionalCosine(delta)
                         # periodic y value
                         neighbor.y = neighbor.y % 3
                         neighbors[atom].append((neighbor, delta, l, m, n))   
                     elif (self.check_in_y_direction(neighbor) and self.check_in_x_direction(neighbor)):
                         # in the structure 
-                        l, m, n = GrapeheneZigZagCell.directionalCosine(delta)
+                        l, m, n = GrapehenearmchairCell.directionalCosine(delta)
                         neighbors[atom].append((neighbor, delta, l, m, n))   
                         
             else:
@@ -145,12 +145,12 @@ class GrapeheneZigZagCell:
                     neighbor = atom.add(delta)
                     
                     if (not self.check_in_y_direction(neighbor)):
-                        l, m, n = GrapeheneZigZagCell.directionalCosine(delta)
+                        l, m, n = GrapehenearmchairCell.directionalCosine(delta)
                         dangling_bonds[atom].append((neighbor, delta, l, m, n))  
                     elif (self.check_in_y_direction(neighbor) and self.check_in_x_direction(neighbor)):
 
                         # in the structure 
-                        l, m, n = GrapeheneZigZagCell.directionalCosine(delta)
+                        l, m, n = GrapehenearmchairCell.directionalCosine(delta)
                         neighbors[atom].append((neighbor, delta, l, m, n))   
                     # ignore x 
         

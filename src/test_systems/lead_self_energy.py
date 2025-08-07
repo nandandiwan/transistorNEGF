@@ -336,7 +336,7 @@ class LeadSelfEnergy():
             Self-energy matrix
         """
         # Get lead Hamiltonian matrices for the device type
-        H00, H01, H10 = self.ham.get_H00_H01_H10(ky=ky)
+        H00, H01, H10 = self.ham.get_H00_H01_H10(ky=ky, side = side)
         # print(H00.toarray())
         # print("=============")
         # print(H01.toarray())

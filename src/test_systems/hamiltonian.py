@@ -2,13 +2,13 @@ import copy
 import numpy as np
 import scipy.sparse as sp
 import scipy.constants as spc
-from unit_cell_generation import GrapeheneZigZagCell
+from unit_cell_generation import GrapehenearmchairCell
 class Hamiltonian:
     """
     Constructs tight-binding Hamiltonians for various device structures.
     """
     def __init__(self, name, periodic = False, relevant_parameters = {}):
-        if((periodic and name != "zigzag")):
+        if((periodic and name != "armchair")):
             raise ValueError("periodic not available or possible")
         self.T = 300  # Use the passed temperature parameter
         self.q = spc.elementary_charge
@@ -56,9 +56,9 @@ class Hamiltonian:
         if (self.name != "one_d_wire"): # base linear potential for graphene is not in place
             self.mock_potential = False
         
-        if (self.name == "zigzag"):
+        if (self.name == "armchair"):
 
-            self.unit_cell = GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
+            self.unit_cell = GrapehenearmchairCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
             
     
     def get_num_sites(self):
@@ -66,9 +66,9 @@ class Hamiltonian:
             return self.N
         elif (self.name == "qpc"):
             return self.W * self.L
-        elif (self.name == "zigzag"):
+        elif (self.name == "armchair"):
             if self.unit_cell is None:
-                self.unit_cell = GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
+                self.unit_cell = GrapehenearmchairCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
             return len(self.unit_cell.structure)
         else:
             return self.num_orbitals * len(self.unit_cell.structure)
@@ -189,9 +189,9 @@ class Hamiltonian:
                         A[idx_next, idx] = t
             return sp.csc_matrix(A)
     
-    def zig_zag_hamiltonian(self, blocks, t=-2.7, onsite_potential=0.0, ky=0.0):
+    def armchair_hamiltonian(self, blocks, t=-2.7, onsite_potential=0.0, ky=0.0):
         """
-        Builds the tight-binding Hamiltonian for the zigzag nanoribbon structure.
+        Builds the tight-binding Hamiltonian for the armchair nanoribbon structure.
 
         Args:
             blocks (bool): Whether to return block format or full matrix
@@ -205,7 +205,7 @@ class Hamiltonian:
         if (not self.periodic and ky != 0):
             raise ValueError("cant have a nonzero ky and a non periodic lattice")
         if self.unit_cell is None:
-            self.unit_cell = GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
+            self.unit_cell = GrapehenearmchairCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
         
         unitCell = self.unit_cell        
         
@@ -215,7 +215,7 @@ class Hamiltonian:
             if (not blocks):
                 return H_eff
             else:
-                return self._convert_to_blocks(H_eff, 2)
+                return self._convert_to_blocks(H_eff, 4)
             
         else:
             num_atoms_total = len(unitCell.structure)
@@ -290,7 +290,7 @@ class Hamiltonian:
             (sp.csc_matrix, sp.csc_matrix): A tuple containing H and T0.
         """
         n = self.Nx
-        num_atoms = 4 * n + 2
+        num_atoms = 4 * n 
         
 
         H_rows = []
@@ -298,7 +298,7 @@ class Hamiltonian:
 
         for i in range(num_atoms):
             neighbors = []
-            if (i != 0 and i != 1 and i != 4 * n and i != (4*n + 1) and ((i-2) % 4) != 0 and (i - 3) % 4 != 0):
+            if (i != 0 and i != 1 and i != 4 * n -1 and i != (4*n - 2) and ((i-2) % 4) != 0 and (i - 3) % 4 != 0):
                 if (i % 2 == 0):
                     neighbors = [i - 1, i + 1, i + 3]
                 else:
@@ -308,10 +308,10 @@ class Hamiltonian:
                     neighbors = [1, 3]
                 elif (i == 1):
                     neighbors = [0, 2]
-                elif (i == 4 * n):
-                    neighbors = [4*n + 1, 4 * n - 1]
-                elif (i == 4 * n + 1):
-                    neighbors = [4 * n, 4 * n - 2]
+                elif (i == 4 * n - 1):
+                    neighbors = [4*n -4]
+                elif (i == 4 * n - 2):
+                    neighbors = [ 4 * n - 3]
                 elif ((i - 2) % 4 == 0):
                     neighbors = [i - 1, i + 3]
                 elif ((i - 3) % 4 == 0):
@@ -389,8 +389,8 @@ class Hamiltonian:
         """
         if self.name in self.hamiltonian_registry:
             H = self.hamiltonian_registry[self.name](self, blocks, ky)
-        elif self.name == "zigzag":
-            H = self.zig_zag_hamiltonian(blocks, ky=ky)
+        elif self.name == "armchair":
+            H = self.armchair_hamiltonian(blocks, ky=ky)
         elif self.name ==  "one_d_wire":
             H = self.one_d_wire(blocks=blocks)
         elif self.name == "quantum_point_contact" or self.name == "qpc":
@@ -405,10 +405,12 @@ class Hamiltonian:
         H = self.add_potential(H, blocks)
         return H
 
-    def get_H00_H01_H10(self, ky=0):
+    def get_H00_H01_H10(self, ky=0, side = "left"):
         """
         Get the principal layer Hamiltonian (H00) and coupling matrices (H01, H10)
         for the semi-infinite leads.
+        
+        side is irrelevant where orientation is not important 
         """
         if self.name in self.lead_registry:
             return self.lead_registry[self.name](self, ky)
@@ -429,7 +431,7 @@ class Hamiltonian:
             
             return H00, H01, H10
         
-        if self.name == "zigzag":
+        if self.name == "armchair":
 
             diag, offdiag = self.create_hamiltonian(True, ky, no_pot=True)
             H00 = diag[0]
@@ -594,11 +596,11 @@ class Hamiltonian:
         self.set_voltage()
         
     def set_params(self, *args):
-        if (self.name == "zigzag"):
+        if (self.name == "armchair"):
             Nx, Ny = args
             self.Nx = Nx
             self.Ny = Ny 
-            self.unit_cell = GrapeheneZigZagCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
+            self.unit_cell = GrapehenearmchairCell(num_layers_x=self.Nx, num_layers_y=self.Ny, periodic=self.periodic)
             
     
     def register_hamiltonian(self, name, func):

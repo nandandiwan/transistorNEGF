@@ -238,6 +238,19 @@ class GreensFunction:
 
         sigma_L = self.lead_self_energy.self_energy("left", E, ky,self_energy_method)
         sigma_R = self.lead_self_energy.self_energy("right", E, ky,self_energy_method)
+        
+        # self_energy_shape = sigma_L.shape[0]
+        # SE_H_factor = self_energy_shape / block_size
+        # for imat in range(SE_H_factor):
+        #     start = imat * block_size
+        #     end = (imat + 1) * block_size
+        #     after = (imat + 2) * block_size 
+            
+        #     piece_one
+            
+        
+        
+        
         if equilibrium:
             sigma_L *= 0
             sigma_R *= 0
@@ -386,6 +399,8 @@ class GreensFunction:
             energy, ky=ky,compute_lesser=False, use_rgf=use_rgf,
             self_energy_method=self_energy_method, equilibrium=equilibrium
         )
+        if use_rgf==False:
+            G_R_diag = np.diag(G_R_diag.toarray())
         return G_R_diag
 
     
