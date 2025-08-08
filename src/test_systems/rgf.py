@@ -848,17 +848,6 @@ class GreensFunction:
         distribution = np.exp(-exp_arg) if self.boltzmann else 1.0 / (1.0 + np.exp(exp_arg))
         
         return ldos_vector * distribution * dE        
-    def compute_ldos_matrix(self, self_energy_method="sancho_rubio", use_rgf=True):
-        num_sites = self.ham.get_num_sites() 
-        num_energies = len(self.energy_grid)
-        ldos_matrix = np.zeros((num_energies, num_sites))
-
-        for i, E in enumerate(self.energy_grid):
-            # This needs to be parallelized for efficiency, similar to your other methods
-            dos_at_E = self.compute_density_of_states(E, use_rgf=use_rgf, self_energy_method=self_energy_method)
-            ldos_matrix[i, :] = dos_at_E
-
-        return ldos_matrix
 
     def _get_ldos_cached(self, E, ky, self_energy_method=None, use_rgf=True):
         key = self._ldos_cache_key(E, ky)
@@ -878,6 +867,7 @@ class GreensFunction:
         else:
             diag_G_R = G_R
         ldos_vector = -1.0 / np.pi * np.imag(diag_G_R)
+        
         # Store in cache
         try:
             self.LDOS_cache[key] = ldos_vector

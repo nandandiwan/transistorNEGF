@@ -57,6 +57,10 @@ class Hamiltonian:
         # for unit cell hamiltonians
         self.unit_cell = None
 
+        #2D systems
+        self.Lx = 20
+        self.Ly = 10
+        
         
         #zig zag
         self.Nx = 10
@@ -72,8 +76,8 @@ class Hamiltonian:
         
         self.potential = None
         
-        self.mock_potential = True # True until poisson solver is in place
-        self.middle_third = True # there's a sort of 
+        self.mock_potential = False # True until poisson solver is in place
+        self.middle_third = False # there's a sort of 
         if (self.name != "one_d_wire"): # base linear potential for graphene is not in place
             self.mock_potential = False
         
@@ -445,7 +449,7 @@ class Hamiltonian:
             raise ValueError(f"Unknown device type: {self.name}")
         if (no_pot):
             return H
-        H = self.add_potential(H, blocks)
+        H = self._add_potential(H, blocks)
         return H
 
     def get_H00_H01_H10(self, ky=0, side = "left"):
@@ -485,6 +489,13 @@ class Hamiltonian:
         else:
             raise ValueError(f"Lead definition not found for device: {self.name}")
         
+    def get_device_dimensions(self, smear : bool):
+        if (self.name == "one_d_wire"):
+            return self.N
+        if (self.name == "armchair"):
+            return (self.Lx, self.Ly)
+            
+        
 
     def get_potential(self, blocks: bool):
         if self.potential is None:
@@ -511,9 +522,17 @@ class Hamiltonian:
                 pot[i] += sp.eye(pot[i].shape[0]) * V
 
         if blocks:
-            return pot
+            if type(self.potential) == np.ndarray:
+                pot_list = [None] * self.potential.shape[0]
+                for i in range(self.potential.shape[0]):
+                    pot_list[i] = sp.eye(self.num_orbitals) * self.potential[i]
+                
+                return pot_list
         else:
             # Collect all diagonals in a list
+            if type(self.potential) == np.ndarray:
+                return self.potential
+            
             diag_list = []
             for block in pot:
                 diag_list.append(np.diag(block.toarray()))
@@ -531,8 +550,11 @@ class Hamiltonian:
         
         self.potential = pot_array
     
+    def set_potential(self, pot):
+        if (self.name == "one_d_wire"):
+            self.potential = pot
 
-    def add_potential(self, hamiltonian, blocks: bool):
+    def _add_potential(self, hamiltonian, blocks: bool):
         if self.potential is None:
             return hamiltonian
         if blocks:
@@ -730,9 +752,10 @@ class Hamiltonian:
                 self.potential[i] += sp.eye(self.num_orbitals) * (V * (-0.5))
         
 
-    def device_interpolation(self, array, smear : bool, dimensions_of_device = None):
+    
+    def device_interpolation(self, array : np.ndarray, smear : bool):
         if smear:
-            return None
+            final_shape = self.get_device_dimensions()
         else:
             return None
         

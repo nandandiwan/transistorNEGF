@@ -102,7 +102,6 @@ def solve_poisson_nonlinear(ham: Hamiltonian, gf : GreensFunction):
     doping_profile = ham.one_d_doping
 
     V = solve_laplace_initial_one_d(epsilon_profile, ham)
-    print(V)
     
     print("Starting non-linear Poisson solver...")
     for iteration in range(1000): 
@@ -113,7 +112,7 @@ def solve_poisson_nonlinear(ham: Hamiltonian, gf : GreensFunction):
             diff_charge_density_unscaled = charge_density /VT
         else:
             charge_density = gf.get_n()
-            diff_charge_density_scaled = gf.diff_rho()
+            diff_charge_density_scaled = gf.diff_rho_poisson()
         
         diff_charge_density_scaled = ham.one_d_dx**2 * diff_charge_density_unscaled
         delta_V = solve_poisson_delta_one_d(
