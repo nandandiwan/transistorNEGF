@@ -615,7 +615,7 @@ class GreensFunction:
           
             
     def get_n(self, V, Efn, Ec, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio", 
-              method='adaptive', rtol=1e-6, atol=1e-12, processes=4):
+              method='gauss_fermi', rtol=1e-6, atol=1e-12, processes=32):
         """
         Compute carrier density with improved parallel and vectorized integration methods.
         
@@ -623,7 +623,7 @@ class GreensFunction:
         -----------
         processes : int
             Number of parallel processes to use for k-point calculations.
-        ... (rest of your docstring)
+    
         """
         self.V = np.atleast_1d(V)
         self.Efn = np.atleast_1d(Efn)

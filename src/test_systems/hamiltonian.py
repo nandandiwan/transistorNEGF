@@ -23,20 +23,32 @@ class Hamiltonian:
         self.mu1 = 0.0 # chemical potential at left
         self.mu2 = 0.0  # chemical potential at right 
         self.Ef = 0.0
+        self.N_donor = 1e24
+        self.N_acceptor = 1e21
+        
+        # testing for poisson solver  
+        self.n_i =1e16
+        self.poisson_testing = True
+        
+        
         
         # one d
         self.num_orbitals = 1
         self.N = 120
         # C_ox
-        self.C_ox = 1e-6 
+        self.C_ox = 2e-5
         # gate width
-        self.gate = False
-        self.gate_factor = 0.25
-        self.one_d_dx = 1e-9
+        self.gate = True
+        self.gate_factor = 0.25 
+        self.one_d_dx = .5e-9
         
+        
+        self.one_d_epsilon = np.full(self.N, 11.7 * 8.85e-12)    
+        self.doping_bool = False
+        self.one_d_doping = self.set_doping()        
         
        
-        self.W = 5   # Width of the QPC
+        self.W = 5  # Width of the QPC
         self.L = 10  # Length of the QPC
         
         # Physical constants
@@ -89,6 +101,28 @@ class Hamiltonian:
         
         self.mu1 = self.Vs + self.Ef
         self.mu2 = self.Vd + self.Ef
+    
+
+    def set_doping(self):
+        
+        if self.name == "one_d_wire":
+            N = self.N
+
+            middle_width = int(self.gate_factor * N)
+            left_width = (N - middle_width) // 2
+            right_width = N - middle_width - left_width
+
+            left_region = self.N_donor * np.ones(left_width)
+            middle_region = self.N_acceptor * np.ones(middle_width)
+            right_region = self.N_donor * np.ones(right_width)
+            doping = np.concatenate((left_region, middle_region, right_region))
+
+            if self.doping_bool:
+                return doping * self.q
+            else:
+                return np.zeros(N)
+        return np.zeros(self.N)
+    
     def one_d_wire(self, blocks=True):
         """Return blocks or full matrix for 1D wire."""
         t, o, N = self.t, self.o, self.N
@@ -694,4 +728,11 @@ class Hamiltonian:
         for i in range(NS + NC, self.N):
             if i < len(self.potential):
                 self.potential[i] += sp.eye(self.num_orbitals) * (V * (-0.5))
+        
+
+    def device_interpolation(self, array, smear : bool, dimensions_of_device = None):
+        if smear:
+            return None
+        else:
+            return None
         
