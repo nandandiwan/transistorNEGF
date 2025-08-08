@@ -39,7 +39,7 @@ class Hamiltonian:
         self.C_ox = 2e-5
         # gate width
         self.gate = True
-        self.gate_factor = 0.25 
+        self.gate_factor = 0.6 
         self.one_d_dx = .5e-9
         
         

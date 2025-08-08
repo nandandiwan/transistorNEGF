@@ -1,4 +1,3 @@
-
 import os
 import time
 
@@ -53,6 +52,53 @@ class GreensFunction:
         self.buttiker_probe_position = None  # Will be set to middle by default
         # The sparse_threshold is now handled by the smart_inverse function
         # self.sparse_threshold = 0.1
+        
+        # cache for LDOS
+        self.LDOS_cache = {}
+
+    # --- LDOS cache helpers ---
+    def _ldos_cache_key(self, E, ky):
+        # Round to avoid floating key mismatches
+        E_key = float(np.real(E))
+        ky_key = float(ky)
+        return (round(E_key, 12), round(ky_key, 12))
+
+    def clear_ldos_cache(self):
+        """Clear the LDOS cache (works for plain dict or Manager proxy)."""
+        try:
+            self.LDOS_cache.clear()
+        except Exception:
+            # Fall back to replacing with a new dict
+            self.LDOS_cache = {}
+
+    def _ensure_shared_cache(self, processes: int | None):
+        """
+        Promote LDOS_cache to a multiprocessing.Manager dict for the duration of
+        a multiprocessing section. Returns the Manager instance; caller must
+        finalize via _finalize_shared_cache(manager) after the Pool work.
+        """
+        if processes is not None and processes > 1 and not hasattr(self.LDOS_cache, '_callmethod'):
+            manager = multiprocessing.Manager()
+            shared = manager.dict()
+            # seed with current cache
+            for k, v in self.LDOS_cache.items():
+                shared[k] = v
+            self.LDOS_cache = shared
+            return manager
+        return None
+
+    def _finalize_shared_cache(self, manager):
+        """Copy proxy cache back to a plain dict and shutdown the manager."""
+        if manager is None:
+            return
+        try:
+            # Copy back to a local dict so it remains usable after manager shutdown
+            self.LDOS_cache = dict(self.LDOS_cache)
+        finally:
+            try:
+                manager.shutdown()
+            except Exception:
+                pass
 
     def fermi_distribution(self, E, mu):
         """Fermi-Dirac distribution function."""
@@ -566,38 +612,51 @@ class GreensFunction:
         G_n_diag = -1j * G_lesser_diag
         return self.dE * G_n_diag * 1 / (2 * np.pi)
 
-    def diff_rho_poisson(self, Efn=None, V=None, Ef=None, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio"):
-        """This finds the gradient of charge density wrt potential, note that all inputs are arrays here"""
-        E_max = Ef + 10 * self.ham.kbT_eV 
-        E_list, dE = np.linspace(Ef, E_max, num_points, retstep=True) 
-        self.V = V
-        self.Efn = Efn
+    def diff_rho_poisson(self, Efn=None, V=None, Ec=None, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio", method='gauss_fermi', processes=32):
+        """This finds the gradient of charge density wrt potential, note that all inputs are arrays here
+        Supports 'uniform' (legacy) and 'gauss_fermi' (faster) integration methods.
+        """
+        self.V = np.atleast_1d(V)
+        self.Efn = np.atleast_1d(Efn)
         self.boltzmann = boltzmann
-
+        
         ky_list = self.k_space
-        param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf], [dE]))
 
-      
-        with multiprocessing.Pool(processes=32) as pool:
-            results = pool.map(self._diff_rho_poisson_worker, param_grid)
+        # Create shared cache only for the duration of multiprocessing
+        _mgr = self._ensure_shared_cache(processes)
+        try:
+            if method == 'uniform':
+                E_max = Ec + 10 * self.ham.kbT_eV 
+                E_list, dE = np.linspace(Ec, E_max, num_points, retstep=True)
+                param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf], [dE]))
+                with multiprocessing.Pool(processes=processes) as pool:
+                    results = pool.map(self._diff_rho_poisson_worker, param_grid)
+            else:  # gauss_fermi
+                # store params needed by the worker
+                self._diff_params = {
+                    'Ef': Ec,
+                    'use_rgf': use_rgf,
+                    'self_energy_method': self_energy_method
+                }
+                with multiprocessing.Pool(processes=processes) as pool:
+                    results = pool.map(self._diff_rho_gauss_fermi_worker, ky_list)
+        finally:
+            self._finalize_shared_cache(_mgr)
 
         if not results:
             print("Warning: No results returned from multiprocessing.")
             n_sites = self.ham.create_hamiltonian(blocks=False).shape[0]
             return np.zeros(n_sites)
 
-
         diff_rho = np.sum(results, axis=0)
-
         if ky_list.size > 0:
             diff_rho /= ky_list.size
-
         return diff_rho.real
+
     def _diff_rho_poisson_worker(self, param):
         E, ky, self_energy_method, use_rgf, dE = param 
-        gf_param = (E, ky, self_energy_method, use_rgf, False)
-        gf_matrix = self._calculate_gf_simple(gf_param) 
-        ldos_vector = -1 / np.pi * np.imag(gf_matrix)
+        # Use LDOS cache
+        ldos_vector = self._get_ldos_cached(E, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
         
         exp_arg = (E - self.V - self.Efn) / self.ham.kbT_eV
         exp_arg = np.clip(exp_arg, -100, 100)
@@ -606,14 +665,39 @@ class GreensFunction:
         if self.boltzmann:
             return ldos_vector * (1 / boltzmann_part) / self.ham.kbT_eV * dE
         else:
-            
             fermi_derivative_part = boltzmann_part / ( (1 + boltzmann_part)**2 )
             return ldos_vector * fermi_derivative_part / self.ham.kbT_eV * dE
-        
 
-          
-          
-            
+    def _diff_rho_gauss_fermi_worker(self, ky):
+        """Gauss-Fermi quadrature for d rho / d V at a single k-point."""
+        kT = self.ham.kbT_eV
+        n_sites = self.ham.get_num_sites()
+        Ef = self._diff_params['Ef']
+
+        mu_avg = np.mean(self.V + self.Efn)
+        x_min = (Ef - mu_avg) / kT
+        x_max = 20.0
+
+        n_quad = 32
+        x_points, weights = np.polynomial.legendre.leggauss(n_quad)
+        x_scaled = 0.5 * (x_max - x_min) * x_points + 0.5 * (x_max + x_min)
+        weights_scaled = weights * 0.5 * (x_max - x_min)
+
+        ky_diff = np.zeros(n_sites)
+        for x, w in zip(x_scaled, weights_scaled):
+            E_ref = mu_avg + x * kT
+            ldos_vector = self._get_ldos_cached(E_ref, ky, self_energy_method=self._diff_params['self_energy_method'], use_rgf=self._diff_params['use_rgf'])
+            exp_arg = np.clip((E_ref - self.V - self.Efn) / kT, -700, 700)
+            if self.boltzmann:
+                factor = np.exp(-exp_arg)
+            else:
+                expx = np.exp(exp_arg)
+                factor = expx / (1.0 + expx)**2  # df/dV factor (1/kT) times dE=kT dx cancels
+            ky_diff += w * ldos_vector * factor
+        return ky_diff
+    
+
+
     def get_n(self, V, Efn, Ec, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio", 
               method='gauss_fermi', rtol=1e-6, atol=1e-12, processes=32):
         """
@@ -635,31 +719,35 @@ class GreensFunction:
             'self_energy_method': self_energy_method
         }
         
-        # Fallback to serial execution if only one k-point or one process
-        if processes <= 1:
-            print("Running in serial mode (1 k-point or 1 process).")
-            # Create a mock pool for a unified code path
-            pool = multiprocessing.Pool.ThreadPool(1) 
-        else:
-            print(f"Running in parallel mode with {processes} processes.")
-            pool = multiprocessing.Pool(processes=processes)
+        # Promote cache to shared proxy for multiprocessing duration
+        _mgr = self._ensure_shared_cache(processes)
+        try:
+            # Fallback to serial execution if only one k-point or one process
+            if processes <= 1:
+                print("Running in serial mode (1 k-point or 1 process).")
+                pool = multiprocessing.pool.ThreadPool(1)
+            else:
+                print(f"Running in parallel mode with {processes} processes.")
+                pool = multiprocessing.Pool(processes=processes)
 
-        with pool:
-            if method == 'adaptive':
-                results = pool.map(self._adaptive_worker, self.k_space)
-            elif method == 'gauss_fermi':
-                self._worker_params['Ec'] = Ec
-                results = pool.map(self._gauss_fermi_worker, self.k_space)
-            else: # uniform
-                # Create the parameter grid for the uniform method
-                E_max = Ec + 10 
-                E_list = np.linspace(Ec, E_max, num_points)
-                if num_points > 1:
-                    dE = E_list[1] - E_list[0]
-                else:
-                    dE = 1.0
-                param_grid = list(product(E_list, self.k_space, [dE]))
-                results = pool.map(self._uniform_worker, param_grid)
+            with pool:
+                if method == 'adaptive':
+                    results = pool.map(self._adaptive_worker, self.k_space)
+                elif method == 'gauss_fermi':
+                    self._worker_params['Ec'] = Ec
+                    results = pool.map(self._gauss_fermi_worker, self.k_space)
+                else: # uniform
+                    # Create the parameter grid for the uniform method
+                    E_max = Ec + 10 
+                    E_list = np.linspace(Ec, E_max, num_points)
+                    if num_points > 1:
+                        dE = E_list[1] - E_list[0]
+                    else:
+                        dE = 1.0
+                    param_grid = list(product(E_list, self.k_space, [dE]))
+                    results = pool.map(self._uniform_worker, param_grid)
+        finally:
+            self._finalize_shared_cache(_mgr)
         
         # The reduction step is different for the uniform grid
         if not results:
@@ -731,15 +819,12 @@ class GreensFunction:
         ky_density = np.zeros(n_sites)
         for x, w in zip(x_scaled, weights_scaled):
             E_ref = mu_avg + x * kT
-            G_R, _, _ = self.compute_central_greens_function(
-                E_ref, ky=ky, compute_lesser=False
+            # Use LDOS cache with current solver settings
+            ldos_vector = self._get_ldos_cached(
+                E_ref, ky,
+                self_energy_method=self._worker_params['self_energy_method'],
+                use_rgf=self._worker_params['use_rgf']
             )
-            if sp.issparse(G_R): 
-                diag_G_R = G_R.diagonal()
-            else:
-                diag_G_R = G_R
-            
-            ldos_vector = -1.0 / np.pi * np.imag(diag_G_R)
             
             exp_arg = (E_ref - self.V - self.Efn) / kT
             fermi_vector = np.exp(-exp_arg) if self.boltzmann else 1.0 / (1.0 + np.exp(exp_arg))
@@ -754,16 +839,10 @@ class GreensFunction:
         E, ky, dE = params
         kT = self.ham.kbT_eV
 
-        G_R, _, _ = self.compute_central_greens_function(
-            E, ky=ky, compute_lesser=False
-        )
-
-        if sp.issparse(G_R): 
-            diag_G_R = G_R.diagonal()
-        else:
-            diag_G_R = G_R
-        
-        ldos_vector = -1.0 / np.pi * np.imag(diag_G_R)
+        # Use LDOS cache with current solver settings
+        method = getattr(self, '_worker_params', {}).get('self_energy_method', None)
+        use_rgf = getattr(self, '_worker_params', {}).get('use_rgf', True)
+        ldos_vector = self._get_ldos_cached(E, ky, self_energy_method=method, use_rgf=use_rgf)
         
         exp_arg = np.clip((E - self.V - self.Efn) / kT, -700, 700)
         distribution = np.exp(-exp_arg) if self.boltzmann else 1.0 / (1.0 + np.exp(exp_arg))
@@ -780,3 +859,33 @@ class GreensFunction:
             ldos_matrix[i, :] = dos_at_E
 
         return ldos_matrix
+
+    def _get_ldos_cached(self, E, ky, self_energy_method=None, use_rgf=True):
+        key = self._ldos_cache_key(E, ky)
+        try:
+            if key in self.LDOS_cache:
+                return np.array(self.LDOS_cache[key])
+        except Exception:
+            # If cache is not a mapping proxy yet
+            pass
+        # Compute LDOS via Green's function
+        G_R, _, _ = self.compute_central_greens_function(
+            E, ky=ky, compute_lesser=False, use_rgf=use_rgf,
+            self_energy_method=self_energy_method
+        )
+        if sp.issparse(G_R):
+            diag_G_R = G_R.diagonal()
+        else:
+            diag_G_R = G_R
+        ldos_vector = -1.0 / np.pi * np.imag(diag_G_R)
+        # Store in cache
+        try:
+            self.LDOS_cache[key] = ldos_vector
+        except Exception:
+            # If cache not shareable or some multiprocessing error, just skip caching
+            pass
+        return ldos_vector
+
+    # Public alias (for external callers expecting this name)
+    def get_ldos_cache(self, E, ky, self_energy_method=None, use_rgf=True):
+        return self._get_ldos_cached(E, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
