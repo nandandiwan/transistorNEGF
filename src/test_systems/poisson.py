@@ -111,9 +111,21 @@ def solve_poisson_nonlinear(ham: Hamiltonian, gf : GreensFunction):
             charge_density = -ham.q * ham.n_i * np.exp(V /VT)
             diff_charge_density_unscaled = charge_density /VT
         else:
-            charge_density = gf.get_n()
-            diff_charge_density_scaled = gf.diff_rho_poisson()
+            A_cs = getattr(ham, 'cross_section_area', 1.0)  # m^2
+            volume_per_site = ham.one_d_dx * A_cs            # m^3
+
+            # Provide required arguments to NEGF density routines.
+            # Use Efn = 0 reference (array) and Ec = 0 unless model supplies band edge separately.
+            Efn_array = np.zeros_like(V)
+            Ec = 0.0
+
+            n_site = gf.get_n(V=V, Efn=Efn_array, Ec=Ec, use_rgf=True)  # electrons per site
+            dn_dV_site = gf.diff_rho_poisson(Efn=Efn_array, V=V, Ec=Ec, use_rgf=True)
+
+            charge_density = -ham.q * n_site / volume_per_site               
+            diff_charge_density_unscaled = -ham.q * dn_dV_site / volume_per_site 
         
+
         diff_charge_density_scaled = ham.one_d_dx**2 * diff_charge_density_unscaled
         delta_V = solve_poisson_delta_one_d(
             V, diff_charge_density_scaled, charge_density, epsilon_profile, doping_profile, ham
