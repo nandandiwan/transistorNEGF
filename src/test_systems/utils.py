@@ -4,7 +4,6 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 from scipy.linalg import inv
 import warnings
-from __future__ import print_function
 def smart_inverse(A, sparse_threshold=0.1):
     """
     Compute the inverse of a matrix A.
@@ -96,151 +95,208 @@ def sparse_diag_product(A, B):
 
     return diag
 
-def chandrupatla(f,x0,x1,verbose=False, 
-                 eps_m = None, eps_a = None, 
-                 maxiter=50, return_iter=False, args=(),):
-    # copied from https://github.com/scipy/scipy/issues/7242#issuecomment-290548427
-    
-    # Initialization
-    b = x0
-    a = x1
-    fa = f(a, *args)
-    fb = f(b, *args)
-    
-    # Make sure we know the size of the result
-    shape = np.shape(fa)
-    assert shape == np.shape(fb)
-        
-    # In case x0, x1 are scalars, make sure we broadcast them to become the size of the result
-    b += np.zeros(shape)
-    a += np.zeros(shape)
+def chandrupatla(f, x0, x1, verbose=False,
+                 eps_m=None, eps_a=None,
+                 rtol=1e-5, atol=0.0,
+                 maxiter=50, return_iter=False, args=()):
+    """Vectorized Chandrupatla root-finding method.
 
-    fc = fa
-    c = a
-    
-    # Make sure we are bracketing a root in each case
-    assert (np.sign(fa) * np.sign(fb) <= 0).all()
-    t = 0.5
-    # Initialize an array of False,
-    # determines whether we should do inverse quadratic interpolation
-    iqi = np.zeros(shape, dtype=bool)
-    
-    # jms: some guesses for default values of the eps_m and eps_a settings
-    # based on machine precision... not sure exactly what to do here
-    eps = np.finfo(float).eps
-    if eps_m is None:
-        eps_m = eps
-    if eps_a is None:
-        eps_a = 2*eps
-    
-    iterations = 0
-    terminate = False
-    
-    while maxiter > 0:
-        maxiter -= 1
-        # use t to linearly interpolate between a and b,
-        # and evaluate this function as our newest estimate xt
-        xt = a + t*(b-a)
+    Parameters
+    ----------
+    f : callable
+        Function handle. Must accept (x,*args) where x can be a scalar or a
+        NumPy array. The function must be vectorized w.r.t. x (element-wise).
+    x0, x1 : scalar or array_like
+        Bracketing interval bounds for each root. These can be scalars (then
+        broadcast to the output shape) or arrays of the same shape as f(x0).
+        For array use each pair (x0[i], x1[i]) must bracket a root: f(x0)*f(x1)<=0.
+    verbose : bool or file-like, optional
+        If True prints iteration diagnostics. If file-like writes there.
+    eps_m, eps_a : float or array_like, optional (deprecated in favor of rtol/atol)
+        Legacy names kept for backward compatibility. If provided they override
+        rtol / atol. Relative (multiplicative) and absolute components of the
+        stopping tolerance  tol = 2*eps_m*|x| + eps_a.
+    rtol, atol : float or array_like, optional
+        Preferred interface for relative/absolute tolerances. Default rtol=1e-5,
+        atol=0.0. Can be broadcast to the shape of x. Effective tolerance used:
+            tol = 2*rtol*|x| + atol
+    maxiter : int, optional
+        Maximum number of iterations.
+    return_iter : bool, optional
+        If True also return per-root iteration counts.
+    args : tuple, optional
+        Extra arguments passed to f.
+
+    Returns
+    -------
+    roots : ndarray or scalar
+        Approximated roots.
+    iterations : ndarray (optional)
+        Number of iterations performed for each root (only if return_iter).
+    """
+    # Evaluate function at initial end points (we copy to avoid mutating inputs)
+    a0 = np.asarray(x0, dtype=float)
+    b0 = np.asarray(x1, dtype=float)
+
+    # Ensure broadcasting if user supplied scalars vs arrays
+    # We'll evaluate on 'a' to grab shape
+    fa = f(a0, *args)
+    fb = f(b0, *args)
+    fa = np.asarray(fa)
+    fb = np.asarray(fb)
+
+    if fa.shape != fb.shape:
+        # Attempt broadcast
+        try:
+            fb = np.broadcast_to(fb, fa.shape)
+            b0 = np.broadcast_to(b0, fa.shape)
+        except ValueError:
+            raise ValueError("f(x0) and f(x1) shapes not broadcastable")
+
+    shape = fa.shape
+    scalar_output = (shape == ())
+
+    # Broadcast a0, b0 to shape
+    if np.shape(a0) != shape:
+        a0 = np.broadcast_to(a0, shape).astype(float)
+    if np.shape(b0) != shape:
+        b0 = np.broadcast_to(b0, shape).astype(float)
+
+    a = a0.copy()
+    b = b0.copy()
+
+    # Check for valid brackets: allow equality (root at endpoint)
+    if not np.all(np.sign(fa) * np.sign(fb) <= 0):
+        bad = np.where(np.sign(fa) * np.sign(fb) > 0)
+        raise ValueError(f"Chandrupatla: supplied bounds do not bracket a root at indices {bad}")
+
+    c = a.copy()
+    fc = fa.copy()
+
+    # Determine effective tolerances (prefer new rtol/atol unless legacy given)
+    if eps_m is not None:
+        rtol = eps_m
+    if eps_a is not None:
+        atol = eps_a
+    # Ensure arrays
+    eps_m = np.asarray(rtol)  # rename for internal use
+    eps_a = np.asarray(atol)
+    if eps_m.shape not in ((), shape):
+        eps_m = np.broadcast_to(eps_m, shape)
+    if eps_a.shape not in ((), shape):
+        eps_a = np.broadcast_to(eps_a, shape)
+
+    t = np.full(shape, 0.5) if shape else 0.5
+    terminate = np.zeros(shape, dtype=bool) if shape else False
+    iterations = np.zeros(shape, dtype=int) if shape else 0
+
+    for _ in range(maxiter):
+        # Candidate new point
+        xt = a + t * (b - a)
         ft = f(xt, *args)
+
         if verbose:
-            output = 'IQI? %s\nt=%s\nxt=%s\nft=%s\na=%s\nb=%s\nc=%s' % (iqi,t,xt,ft,a,b,c)
-            if verbose == True:
+            output = f"t={t}\nxt={xt}\nft={ft}\na={a}\nfa={fa}\nb={b}\nfb={fb}\nc={c}\nfc={fc}"
+            if verbose is True:
                 print(output)
             else:
-                print(output,file=verbose)
-        # update our history of the last few points so that
-        # - a is the newest estimate (we're going to update it from xt)
-        # - c and b get the preceding two estimates
-        # - a and b maintain opposite signs for f(a) and f(b)
-        samesign = np.sign(ft) == np.sign(fa)
-        c  = np.choose(samesign, [b,a])
-        b  = np.choose(samesign, [a,b])
-        fc = np.choose(samesign, [fb,fa])
-        fb = np.choose(samesign, [fa,fb])
-        a  = xt
-        fa = ft
-        
-        # set xm so that f(xm) is the minimum magnitude of f(a) and f(b)
-        fa_is_smaller = np.abs(fa) < np.abs(fb)
-        xm = np.choose(fa_is_smaller, [b,a])
-        fm = np.choose(fa_is_smaller, [fb,fa])
-        
-        """
-        the preceding lines are a vectorized version of:
+                try:
+                    print(output, file=verbose)
+                except Exception:
+                    print(output)
 
-        samesign = np.sign(ft) == np.sign(fa)        
-        if samesign
-            c = a
-            fc = fa
+        # Determine sign agreement
+        samesign = np.sign(ft) == np.sign(fa)
+
+        # Save old values for those not overwritten
+        a_old, fa_old = a, fa
+        b_old, fb_old = b.copy(), fb.copy()
+        c_old, fc_old = c.copy(), fc.copy()
+
+        # Update per scalar formulation using boolean masks
+        # where samesign: c <- a_old; fc <- fa_old
+        # else:          c <- b_old; fc <- fb_old; b <- a_old; fb <- fa_old
+        if shape:
+            c = np.where(samesign, a_old, b_old)
+            fc = np.where(samesign, fa_old, fb_old)
+            b = np.where(samesign, b_old, a_old)
+            fb = np.where(samesign, fb_old, fa_old)
         else:
-            c = b
-            b = a
-            fc = fb
-            fb = fa
+            if samesign:
+                c = a_old
+                fc = fa_old
+            else:
+                c = b_old
+                fc = fb_old
+                b = a_old
+                fb = fa_old
 
         a = xt
         fa = ft
-        # set xm so that f(xm) is the minimum magnitude of f(a) and f(b)
-        if np.abs(fa) < np.abs(fb):
-            xm = a
-            fm = fa
-        else:
-            xm = b
-            fm = fb
-        """
-        
-        tol = 2*eps_m*np.abs(xm) + eps_a
-        tlim = tol/np.abs(b-c)
-        terminate = np.logical_or(terminate, np.logical_or(fm==0, tlim > 0.5))
-        if verbose:            
-            output = "fm=%s\ntlim=%s\nterm=%s" % (fm,tlim,terminate)
-            if verbose == True:
-                print(output)
-            else:
-                print(output, file=verbose)
 
+        # xm: point with smaller |f|
+        fa_is_smaller = np.abs(fa) < np.abs(fb)
+        if shape:
+            xm = np.where(fa_is_smaller, a, b)
+            fm = np.where(fa_is_smaller, fa, fb)
+        else:
+            xm = a if fa_is_smaller else b
+            fm = fa if fa_is_smaller else fb
+
+        tol = 2 * eps_m * np.abs(xm) + eps_a
+        denom = np.abs(b - c)
+        denom = np.where(denom == 0, 1.0, denom)  # avoid divide by zero
+        tlim = tol / denom
+        new_terminate = (fm == 0) | (tlim > 0.5) | terminate
+        if shape:
+            iterations[~new_terminate] += 1
+        else:
+            if not new_terminate:
+                iterations += 1
+        terminate = new_terminate
         if np.all(terminate):
             break
-        iterations += 1-terminate
-        
-        # Figure out values xi and phi 
-        # to determine which method we should use next
-        xi  = (a-b)/(c-b)
-        phi = (fa-fb)/(fc-fb)
-        iqi = np.logical_and(phi**2 < xi, (1-phi)**2 < 1-xi)
-            
-        if not shape:
-            # scalar case
-            if iqi:
-                # inverse quadratic interpolation
-                t = fa / (fb-fa) * fc / (fb-fc) + (c-a)/(b-a)*fa/(fc-fa)*fb/(fc-fb)
-            else:
-                # bisection
-                t = 0.5
-        else:
-            # array case
+
+        # Compute xi, phi
+        with np.errstate(divide='ignore', invalid='ignore'):
+            xi = (a - b) / (c - b)
+            phi = (fa - fb) / (fc - fb)
+
+        # Inverse quadratic interpolation condition
+        iqi = (phi ** 2 < xi) & ((1 - phi) ** 2 < 1 - xi)
+
+        if shape:
             t = np.full(shape, 0.5)
-            a2,b2,c2,fa2,fb2,fc2 = a[iqi],b[iqi],c[iqi],fa[iqi],fb[iqi],fc[iqi]
-            t[iqi] = fa2 / (fb2-fa2) * fc2 / (fb2-fc2) + (c2-a2)/(b2-a2)*fa2/(fc2-fa2)*fb2/(fc2-fb2)
-        
-        # limit to the range (tlim, 1-tlim)
-        t = np.minimum(1-tlim, np.maximum(tlim, t))
-        
-    # done!
+            if np.any(iqi):
+                # Only compute for those indices to avoid invalid divisions
+                ai = a[iqi]; bi = b[iqi]; ci = c[iqi]
+                fai = fa[iqi]; fbi = fb[iqi]; fci = fc[iqi]
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    ti = (fai / (fbi - fai)) * (fci / (fbi - fci)) + \
+                         ((ci - ai) / (bi - ai)) * (fai / (fci - fai)) * (fbi / (fci - fbi))
+                # Fallback to bisection if nan/inf
+                bad = ~np.isfinite(ti)
+                if np.any(bad):
+                    ti[bad] = 0.5
+                t[iqi] = ti
+        else:
+            if iqi and np.isfinite(fa) and np.isfinite(fb) and np.isfinite(fc):
+                t = (fa / (fb - fa)) * (fc / (fb - fc)) + ((c - a) / (b - a)) * (fa / (fc - fa)) * (fb / (fc - fb))
+            else:
+                t = 0.5
+
+        # Clamp t to (tlim, 1 - tlim)
+        if shape:
+            t = np.minimum(1 - tlim, np.maximum(tlim, t))
+        else:
+            t = min(1 - tlim, max(tlim, t))
+
+    roots = xm if 'xm' in locals() else a  # fallback
+    if scalar_output:
+        roots = np.asarray(roots).item()
+        iterations = int(iterations)
     if return_iter:
-        return xm, iterations
-    else:
-        return xm
+        return roots, iterations
+    return roots
     
     
-def f(x,a):
-    return a-x*x
-
-k=np.arange(1,8)
-y = chandrupatla(f,0,3,args=(k,))
-print(y)
-print(k-y**2)
-
-y = chandrupatla(f,0,3,args=(7.0,))
-print(y)
-print(7-y**2)
