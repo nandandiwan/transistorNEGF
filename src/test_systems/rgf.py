@@ -13,10 +13,15 @@ import scipy.sparse as sp
 from scipy.linalg import inv 
 import scipy.constants as spc
 from scipy.integrate import quad_vec
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import warnings
 
-
+import numpy as np
+import multiprocessing
+from itertools import product
+from scipy.interpolate import PchipInterpolator
+from numpy.fft import rfft, irfft
 from hamiltonian import Hamiltonian
 from lead_self_energy import LeadSelfEnergy
 from utils import smart_inverse  
@@ -587,21 +592,75 @@ class GreensFunction:
         total_current = np.sum(results)
         return total_current
 
-    def compute_charge_density(self, self_energy_method="sancho_rubio", use_rgf=True):
-        E_list = self.energy_grid
-        ky_list = self.k_space
-        param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf]))
-        
-        with multiprocessing.Pool(processes=32) as pool:
-            results = pool.map(self._charge_worker, param_grid)
-        if not results:
-            print("Warning: No results returned from multiprocessing.")
-            n_sites = self.ham.create_hamiltonian(blocks=False).shape[0]
+    def compute_charge_density(self, self_energy_method="sancho_rubio", use_rgf=True,
+                                method="lesser", Ec=None, gauss_tail=False, tail_extent=20.0,
+                                tail_points=32, processes=32):
+        """Compute electron number per site (one spin) with multiple integration backends.
+        """
+        if method == "lesser":
+            E_list = self.energy_grid
+            ky_list = self.k_space
+            param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf]))
+            with multiprocessing.Pool(processes=processes) as pool:
+                results = pool.map(self._charge_worker, param_grid)
+            if not results:
+                print("Warning: No results returned from multiprocessing.")
+                n_sites = self.ham.create_hamiltonian(blocks=False).shape[0]
+                return np.zeros(n_sites)
+            total_density = np.sum(results, axis=0)
+            if len(self.k_space) > 0:
+                total_density /= len(self.k_space)
+            return total_density.real
+
+        if method != "ldos_fermi":
+            raise ValueError("Unknown method for compute_charge_density: " + method)
+
+        # --- ldos_fermi path ---
+        kT = self.ham.kbT_eV
+        mu = self.ham.mu1  # equilibrium assumption (mu1 == mu2)
+        E_grid = self.energy_grid
+        dE = self.dE
+        n_sites = self.ham.get_num_sites()
+        if Ec is None:
+            Ec_val = float(E_grid[0])
+        else:
+            Ec_val = float(Ec)
+
+        # Identify energy indices above Ec
+        energy_mask = E_grid >= Ec_val
+        if not np.any(energy_mask):
             return np.zeros(n_sites)
-        total_density = np.sum(results, axis=0)
-        if ky_list.size > 0:
-            total_density /= ky_list.size
-        return total_density.real
+
+        # Accumulate density by looping energy grid (leveraging LDOS cache)
+        density = np.zeros(n_sites, dtype=float)
+        k_norm = max(1, len(self.k_space))
+        for E in E_grid[energy_mask]:
+            ldos_accum = np.zeros(n_sites)
+            for ky in self.k_space:
+                ldos_accum += self._get_ldos_cached(E, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
+            ldos_accum /= k_norm
+            fE = self.fermi_distribution(E, mu)
+            density += ldos_accum * fE * dE
+
+        # Optional Gauss tail for E beyond last grid point to improve convergence
+        if gauss_tail:
+            E_max = E_grid[-1]
+            x_min, x_max = 0.0, tail_extent
+            x_pts, w = np.polynomial.legendre.leggauss(tail_points)
+            # scale to [x_min, x_max]
+            x_scaled = 0.5 * (x_max - x_min) * x_pts + 0.5 * (x_max + x_min)
+            w_scaled = w * 0.5 * (x_max - x_min)
+            for x, wgt in zip(x_scaled, w_scaled):
+                E_ref = E_max + x * kT
+                ldos_accum = np.zeros(n_sites)
+                for ky in self.k_space:
+                    ldos_accum += self._get_ldos_cached(E_ref, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
+                ldos_accum /= k_norm
+                fE = self.fermi_distribution(E_ref, mu)
+                # dE = kT * dx for this transformed variable
+                density += ldos_accum * fE * (kT * wgt)
+
+        return density.real
     
     
     def _charge_worker(self, param):
@@ -879,3 +938,82 @@ class GreensFunction:
     # Public alias (for external callers expecting this name)
     def get_ldos_cache(self, E, ky, self_energy_method=None, use_rgf=True):
         return self._get_ldos_cached(E, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
+
+    def build_ldos_matrix(self, E_list=None, self_energy_method="sancho_rubio", use_rgf=True,
+                           workers=None, verbose=False, chunk=1):
+        """Build an LDOS matrix of shape (len(E_list), n_sites) using multithreading.
+
+        Parameters
+        ----------
+        E_list : array_like or None
+            Energies to evaluate. If None uses self.energy_grid.
+        self_energy_method : str
+            Lead self-energy method.
+        use_rgf : bool
+            Use recursive Green's function (True) or direct inversion (False).
+        workers : int or None
+            Number of threads (default: min(len(E_list), os.cpu_count())). Use 1 for serial.
+        verbose : bool
+            Print progress info.
+        chunk : int
+            Number of energies per task (batch) to reduce thread overhead.
+
+        Returns
+        -------
+        ldos_matrix : np.ndarray
+            LDOS(E_i, x) matrix.
+        """
+        if E_list is None:
+            E_list = self.energy_grid
+        E_list = np.atleast_1d(E_list).astype(float)
+        nE = E_list.size
+        n_sites = self.ham.get_num_sites()
+        k_norm = max(1, len(self.k_space))
+
+        if workers is None or workers <= 0:
+            import os as _os
+            workers = min(nE, max(1, _os.cpu_count() or 1))
+        workers = max(1, workers)
+
+        if verbose:
+            print(f"Building LDOS matrix with {workers} thread(s) over {nE} energies (chunk={chunk}) ...")
+
+        # Prepare tasks as batches of energies to amortize overhead
+        batches = [E_list[i:i+chunk] for i in range(0, nE, chunk)]
+        ldos_matrix = np.zeros((nE, n_sites), dtype=float)
+
+        def _batch_worker(batch, offset):
+            rows = []
+            for j, E in enumerate(batch):
+                ldos_accum = np.zeros(n_sites)
+                for ky in self.k_space:
+                    ldos_accum += self._get_ldos_cached(E, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
+                rows.append(ldos_accum / k_norm)
+            return offset, np.vstack(rows)
+
+        if workers == 1:
+            pos = 0
+            for batch in batches:
+                _, data = _batch_worker(batch, pos)
+                ldos_matrix[pos:pos+data.shape[0], :] = data
+                pos += data.shape[0]
+                if verbose:
+                    print(f"Progress: {pos}/{nE} energies")
+            return ldos_matrix
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            pos = 0
+            for batch in batches:
+                futures[executor.submit(_batch_worker, batch, pos)] = (pos, len(batch))
+                pos += len(batch)
+            completed = 0
+            for fut in as_completed(futures):
+                offset, data = fut.result()
+                ldos_matrix[offset:offset+data.shape[0], :] = data
+                completed += data.shape[0]
+                if verbose:
+                    print(f"Progress: {completed}/{nE} energies ({completed/nE*100:.1f}%)")
+        return ldos_matrix
+
+

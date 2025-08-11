@@ -3,6 +3,7 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.constants as spc
 from unit_cell_generation import GrapehenearmchairCell
+
 class Hamiltonian:
     """
     Constructs tight-binding Hamiltonians for various device structures.
@@ -16,7 +17,7 @@ class Hamiltonian:
         self.kbT_eV = spc.Boltzmann * self.T / self.q  # Also store in eV for convenience
         self.name = name
         self.t = 1 #* spc.hbar**2 / (2 * spc.m_e * .25 * (3e-10)**2 * self.q)   # Hopping energy
-        self.o = 2 #* spc.hbar**2 / (2 * spc.m_e * .25 * (3e-10)**2 * self.q)   # Base on-site energy
+        self.o = 0 #* spc.hbar**2 / (2 * spc.m_e * .25 * (3e-10)**2 * self.q)   # Base on-site energy
         self.Vs = 0.0  # Source voltage
         self.Vd = 0.0  # Drain voltage
         self.Vg = 0  # Gate voltage applied to the device region
@@ -34,7 +35,7 @@ class Hamiltonian:
         
         # one d
         self.num_orbitals = 1
-        self.N = 120
+        self.N = 20
         # C_ox
         self.C_ox = 2e-5
         # gate width
