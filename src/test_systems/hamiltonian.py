@@ -29,7 +29,7 @@ class Hamiltonian:
         
         # testing for poisson solver  
         self.n_i =1e16
-        self.poisson_testing = True
+        self.poisson_testing = False
         
         
         
@@ -37,7 +37,7 @@ class Hamiltonian:
         self.num_orbitals = 1
         self.N = 20
         # C_ox
-        self.C_ox = 2e-5
+        self.C_ox = 2e-3
         # gate width
         self.gate = True
         self.gate_factor = 0.6 
@@ -45,7 +45,7 @@ class Hamiltonian:
         
         
         self.one_d_epsilon = np.full(self.N, 11.7 * 8.85e-12)    
-        self.doping_bool = False
+        self.doping_bool = True
         self.one_d_doping = self.set_doping()        
         
        

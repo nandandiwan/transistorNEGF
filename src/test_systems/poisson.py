@@ -94,7 +94,7 @@ def solve_poisson_delta_one_d(V, diff_rho, rho, epsilon, doping, ham: Hamiltonia
 
     return delta_V
 
-def solve_poisson_nonlinear(ham: Hamiltonian, gf : GreensFunction):
+def solve_poisson_nonlinear(ham: Hamiltonian, gf : GreensFunction, Efn_array):
     """
     Iteratively solves the non-linear Poisson equation using newtons method 
     """
@@ -116,8 +116,7 @@ def solve_poisson_nonlinear(ham: Hamiltonian, gf : GreensFunction):
 
             # Provide required arguments to NEGF density routines.
             # Use Efn = 0 reference (array) and Ec = 0 unless model supplies band edge separately.
-            Efn_array = np.zeros_like(V)
-            Ec = 0.0
+            Ec = -2
 
             n_site = gf.get_n(V=V, Efn=Efn_array, Ec=Ec, use_rgf=True)  # electrons per site
             dn_dV_site = gf.diff_rho_poisson(Efn=Efn_array, V=V, Ec=Ec, use_rgf=True)

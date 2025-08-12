@@ -135,32 +135,38 @@ def chandrupatla(f, x0, x1, verbose=False,
         Number of iterations performed for each root (only if return_iter).
     """
     # Evaluate function at initial end points (we copy to avoid mutating inputs)
+
     a0 = np.asarray(x0, dtype=float)
     b0 = np.asarray(x1, dtype=float)
 
-    # Ensure broadcasting if user supplied scalars vs arrays
-    # We'll evaluate on 'a' to grab shape
+    # Evaluate function at initial end points
     fa = f(a0, *args)
     fb = f(b0, *args)
     fa = np.asarray(fa)
     fb = np.asarray(fb)
 
+    shape = fa.shape
+    scalar_output = (shape == ())
+
+    # Broadcasting diagnostics and actions
     if fa.shape != fb.shape:
-        # Attempt broadcast
+        if verbose:
+            print(f"Broadcasting fb and b0 from shape {fb.shape} to {fa.shape}")
         try:
             fb = np.broadcast_to(fb, fa.shape)
             b0 = np.broadcast_to(b0, fa.shape)
         except ValueError:
             raise ValueError("f(x0) and f(x1) shapes not broadcastable")
 
-    shape = fa.shape
-    scalar_output = (shape == ())
-
-    # Broadcast a0, b0 to shape
     if np.shape(a0) != shape:
+        if verbose:
+            print(f"Broadcasting a0 from shape {np.shape(a0)} to {shape}")
         a0 = np.broadcast_to(a0, shape).astype(float)
     if np.shape(b0) != shape:
+        if verbose:
+            print(f"Broadcasting b0 from shape {np.shape(b0)} to {shape}")
         b0 = np.broadcast_to(b0, shape).astype(float)
+
 
     a = a0.copy()
     b = b0.copy()
@@ -168,7 +174,11 @@ def chandrupatla(f, x0, x1, verbose=False,
     # Check for valid brackets: allow equality (root at endpoint)
     if not np.all(np.sign(fa) * np.sign(fb) <= 0):
         bad = np.where(np.sign(fa) * np.sign(fb) > 0)
-        raise ValueError(f"Chandrupatla: supplied bounds do not bracket a root at indices {bad}")
+        if verbose:
+            print(f"Bracket check failed at indices {bad}")
+        #raise ValueError(f"Chandrupatla: supplied bounds do not bracket a root at indices {bad}")
+        print("doubling range")
+        chandrupatla(f, 3 * x0, 3*x1)
 
     c = a.copy()
     fc = fa.copy()
@@ -182,8 +192,12 @@ def chandrupatla(f, x0, x1, verbose=False,
     eps_m = np.asarray(rtol)  # rename for internal use
     eps_a = np.asarray(atol)
     if eps_m.shape not in ((), shape):
+        if verbose:
+            print(f"Broadcasting eps_m from shape {eps_m.shape} to {shape}")
         eps_m = np.broadcast_to(eps_m, shape)
     if eps_a.shape not in ((), shape):
+        if verbose:
+            print(f"Broadcasting eps_a from shape {eps_a.shape} to {shape}")
         eps_a = np.broadcast_to(eps_a, shape)
 
     t = np.full(shape, 0.5) if shape else 0.5

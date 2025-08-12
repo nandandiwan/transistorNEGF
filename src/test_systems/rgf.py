@@ -24,8 +24,8 @@ from scipy.interpolate import PchipInterpolator
 from numpy.fft import rfft, irfft
 from hamiltonian import Hamiltonian
 from lead_self_energy import LeadSelfEnergy
-from utils import smart_inverse  
-from utils import sparse_diag_product
+from utils import smart_inverse, sparse_diag_product, chandrupatla
+
 
 
 class GreensFunction:
@@ -49,6 +49,7 @@ class GreensFunction:
         self.eta = 1e-6
         self.energy_grid = energy_grid
         self.dE = self.energy_grid[1] - self.energy_grid[0]
+        self.Ec = -2 # need to change! self.identify_EC()
         
         self.additional_self_energies = False
         # Büttiker probe parameters
@@ -718,14 +719,17 @@ class GreensFunction:
         ldos_vector = self._get_ldos_cached(E, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
         
         exp_arg = (E - self.V - self.Efn) / self.ham.kbT_eV
-        exp_arg = np.clip(exp_arg, -100, 100)
-        boltzmann_part = np.exp(exp_arg)
-
+        exp_arg_clipped = np.clip(exp_arg, -700, 700)
         if self.boltzmann:
-            return ldos_vector * (1 / boltzmann_part) / self.ham.kbT_eV * dE
+            boltzmann_part = np.exp(exp_arg_clipped)
+            result = ldos_vector * (1.0 / boltzmann_part) / self.ham.kbT_eV * dE
         else:
-            fermi_derivative_part = boltzmann_part / ( (1 + boltzmann_part)**2 )
-            return ldos_vector * fermi_derivative_part / self.ham.kbT_eV * dE
+            expx = np.exp(exp_arg_clipped)
+            fermi_derivative_part = np.where(exp_arg_clipped > 35, 0.0,
+                                            np.where(exp_arg_clipped < -35, 0.0,
+                                                     expx / ((1.0 + expx) ** 2)))
+            result = ldos_vector * fermi_derivative_part / self.ham.kbT_eV * dE
+        return result
 
     def _diff_rho_gauss_fermi_worker(self, ky):
         """Gauss-Fermi quadrature for d rho / d V at a single k-point."""
@@ -747,11 +751,15 @@ class GreensFunction:
             E_ref = mu_avg + x * kT
             ldos_vector = self._get_ldos_cached(E_ref, ky, self_energy_method=self._diff_params['self_energy_method'], use_rgf=self._diff_params['use_rgf'])
             exp_arg = np.clip((E_ref - self.V - self.Efn) / kT, -700, 700)
+            exp_arg_clipped = np.clip(exp_arg, -700, 700)
             if self.boltzmann:
-                factor = np.exp(-exp_arg)
+                factor = np.exp(-exp_arg_clipped)
             else:
-                expx = np.exp(exp_arg)
-                factor = expx / (1.0 + expx)**2  # df/dV factor (1/kT) times dE=kT dx cancels
+                # Avoid overflow: only compute exp for safe values
+                factor = np.zeros_like(exp_arg_clipped)
+                safe = (exp_arg_clipped > -35) & (exp_arg_clipped < 35)
+                expx_safe = np.exp(exp_arg_clipped[safe])
+                factor[safe] = expx_safe / (1.0 + expx_safe)**2
             ky_diff += w * ldos_vector * factor
         return ky_diff
     
@@ -886,7 +894,13 @@ class GreensFunction:
             )
             
             exp_arg = (E_ref - self.V - self.Efn) / kT
-            fermi_vector = np.exp(-exp_arg) if self.boltzmann else 1.0 / (1.0 + np.exp(exp_arg))
+            exp_arg_clipped = np.clip(exp_arg, -700, 700)
+            if self.boltzmann:
+                fermi_vector = np.exp(-exp_arg_clipped)
+            else:
+                fermi_vector = np.where(exp_arg_clipped > 35, 0.0,
+                                        np.where(exp_arg_clipped < -35, 1.0,
+                                                 1.0 / (1.0 + np.exp(exp_arg_clipped))))
             
             ky_density += w * ldos_vector * fermi_vector * kT
             
@@ -1016,4 +1030,23 @@ class GreensFunction:
                     print(f"Progress: {completed}/{nE} energies ({completed/nE*100:.1f}%)")
         return ldos_matrix
 
+    
+    def identify_EC(self):
+        raise NotImplemented("needs to use the DOS")
 
+    def fermi_energy(self, V :np.ndarray, lower_bound = None, upper_bound = None):
+        """Uses chandrupatla algorithm"""
+        
+        # come up with better estimate
+        if (lower_bound == None ):
+            lower_bound = np.ones_like(V) * -1
+        if (upper_bound == None):
+            upper_bound = np.ones_like(V) * 2
+        
+        n_negf = self.compute_charge_density()
+        def func(x):
+            # x is the trial quasi-Fermi level Efn array; V is the potential
+            return self.get_n(V=V, Efn=x, Ec=self.Ec) - n_negf
+        
+        return chandrupatla(func, lower_bound, upper_bound, verbose=False)
+            
