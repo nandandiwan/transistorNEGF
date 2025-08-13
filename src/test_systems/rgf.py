@@ -33,7 +33,7 @@ class GreensFunction:
     Recursive Green's Function (RGF) implementation optimized with a smart inversion utility.
     """
 
-    def __init__(self, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio", energy_grid = np.linspace(-5,5, 300)):
+    def __init__(self, hamiltonian: Hamiltonian, self_energy_method="sancho_rubio", energy_grid = np.linspace(-.2,.8, 301)):
         """
         Initialize the Green's function calculator.
         """
@@ -119,7 +119,7 @@ class GreensFunction:
             return E
         return E + 1j * self.eta
 
-    def enable_buttiker_probe(self, strength=0.00025, position=None):
+    def enable_buttiker_probe(self, strength=0.25, position=None):
         """
         Enable Buttiker probe for broadening resonances.
         
@@ -200,6 +200,7 @@ class GreensFunction:
         if self_energy_method is None:
             self_energy_method = self.self_energy_method
 
+
         if use_rgf:
             return self._compute_rgf_greens_function(E, ky,compute_lesser, self_energy_method, equilibrium=equilibrium)
         else:
@@ -218,8 +219,14 @@ class GreensFunction:
         H = self.ham.create_hamiltonian(blocks=False, ky=ky)
         n = H.shape[0]
         E = self.add_eta(E)
-        sigma_L = self.lead_self_energy.self_energy("left", E, ky, self_energy_method)
-        sigma_R = self.lead_self_energy.self_energy("right", E,ky, self_energy_method)
+        
+        pot = self.ham.get_potential(blocks = True)
+        left_pot = pot[0].toarray()[0,0]
+        right_pot = pot[-1].toarray()[0,0]
+
+        
+        sigma_L = self.lead_self_energy.self_energy("left", E - left_pot, ky, self_energy_method)
+        sigma_R = self.lead_self_energy.self_energy("right", E - right_pot,ky, self_energy_method)
 
         if equilibrium:
             sigma_L *= 0
@@ -551,30 +558,29 @@ class GreensFunction:
         E, ky, self_energy_method, use_rgf = param
         
         if not use_rgf:
-            transmission = self.compute_transmission(E, ky, self_energy_method)
+            T_E = self.compute_transmission(E, ky=ky, self_energy_method=self_energy_method)
+            f_L = self.fermi_distribution(E, self.ham.mu1)
+            f_R = self.fermi_distribution(E, self.ham.mu2)
+            pref = (self.ham.q**2) / (np.pi * spc.hbar)
+            return self.dE * pref * T_E * (f_L - f_R)
 
-            f_s = self.fermi_distribution(E, self.ham.mu1)
-            f_d = self.fermi_distribution(E, self.ham.mu2)
-            IL_contrib = transmission * f_s
-            IR_contrib = transmission * f_d
-            current_contribution = self.dE * (self.ham.q**2 / (2 * np.pi * spc.hbar)) * (IL_contrib - IR_contrib)
-            
-            return current_contribution
-        
-        G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
+
+        G_R_diag, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
             E, ky=ky, use_rgf=True, self_energy_method=self_energy_method, compute_lesser=True
         )
-        f_s = self.fermi_distribution(E, self.ham.mu1)
-        f_d = self.fermi_distribution(E, self.ham.mu2)
-        sigma_less_left = Gamma_L * f_s * 1j
-        sigma_less_right = Gamma_R * f_d * 1j
-        A_matrix = np.diag(1j * (G_R - G_R.conj()))
-        term1 = np.sum(Gamma_L.diagonal() * G_lesser_diag)
-        term2 = f_s * np.sum(Gamma_L.diagonal() * A_matrix)
-        # dE should be defined (energy step)
-        current_contribution = self.dE * (self.ham.q**2 / (2 * np.pi * spc.hbar)) * (term1 - term2)
-        return current_contribution
+        f_L = self.fermi_distribution(E, self.ham.mu1)
+        f_R = self.fermi_distribution(E, self.ham.mu2)
+        sigma_L_lesser = Gamma_L * f_L *1j
+        sigma_R_lesser = Gamma_R * f_R * 1j
+        sigma_lesser = sigma_R_lesser + sigma_L_lesser
+    
 
+        integrand_diag = -sigma_lesser[0,0] * G_lesser_diag[0]
+
+        meir_wingreen_prefactor = self.ham.q / (spc.hbar)
+        current_contribution = self.dE * meir_wingreen_prefactor * np.real(integrand_diag)
+        
+        return current_contribution
     def compute_total_current(self, self_energy_method="sancho_rubio", use_rgf = False):
         """
         Compute total current by summing over all (E, ky) pairs using multiprocessing.
@@ -591,6 +597,8 @@ class GreensFunction:
 
         # Sum over all energy and ky points
         total_current = np.sum(results)
+        if len(self.k_space) > 0:
+            total_current /= len(self.k_space)
         return total_current
 
     def compute_charge_density(self, self_energy_method="sancho_rubio", use_rgf=True,

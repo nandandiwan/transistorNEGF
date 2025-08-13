@@ -132,7 +132,8 @@ class Hamiltonian:
         """Return blocks or full matrix for 1D wire."""
         t, o, N = self.t, self.o, self.N
         if blocks:
-            return ([sp.eye(1) * o] * N), ([sp.eye(1) * t] * (N - 1))
+            # Use the same sign convention as the full matrix form below (off-diagonals = -t)
+            return ([sp.eye(1) * o] * N), ([sp.eye(1) * -t] * (N - 1))
         else:
             A = np.zeros((N, N))
             for i in range(N):
@@ -463,18 +464,19 @@ class Hamiltonian:
         if self.name in self.lead_registry:
             return self.lead_registry[self.name](self, ky)
         if self.name == "one_d_wire" or self.name == "chain" or self.name =="modified_one_d":
-            
-            H00 = sp.eye(1) * self.o
-            H01 = sp.eye(1) * self.t
-            H10 = sp.eye(1) * self.t
+            # For leads, extract uniform blocks without adding the device potential profile
+            diag, offdiag = self.create_hamiltonian(True, ky, no_pot=True)
+            H00 = diag[0]
+            H01 = offdiag[0]
+            H10 = H01.T.conj()
+            return H00, H01, H10
 
-            return H00, H01, H10 
         if self.name == "quantum_point_contact" or self.name == "qpc":
             
             H00 = self.create_1d_hamiltonian(self.t, self.o, self.W, blocks=False)
             
             # The coupling between principal layers in the lead.
-            H01 = sp.eye(self.W, format='csc', dtype=complex) * self.t
+            H01 = sp.eye(self.W, format='csc', dtype=complex) * (-self.t)
             H10 = H01.T # Assuming real hopping t
             
             return H00, H01, H10
@@ -532,6 +534,7 @@ class Hamiltonian:
         else:
             # Collect all diagonals in a list
             if type(self.potential) == np.ndarray:
+    
                 return self.potential
             
             diag_list = []
@@ -573,7 +576,7 @@ class Hamiltonian:
                 raise TypeError("Unexpected type for hamiltonian in blocks mode.")
         else:
             pot_matrix = self.get_potential(blocks)
-            return hamiltonian + pot_matrix
+            return hamiltonian + np.diag(pot_matrix)
     
     def set_barrier_potential(self, positions, height, width=1):
         """

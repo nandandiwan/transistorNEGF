@@ -20,7 +20,9 @@ class LeadSelfEnergy():
     def _add_eta(self, E):
         """Add small imaginary part if energy is real for numerical stability"""
         if np.imag(E) == 0:
+       
             return E + 1j * self.eta
+        
         return E
         
     def surface_greens_function(self, E, H00, H01, method="sancho_rubio", 
@@ -144,7 +146,7 @@ class LeadSelfEnergy():
 
         # Initial guess for the surface Green's function (g_s)
         try:
-            g_s = np.linalg.inv(w * identity - H00)
+            g_s = np.linalg.solve(w * identity - H00, identity)
         except np.linalg.LinAlgError:
             print("ERROR: Failed on the very first inversion!")
             return None
@@ -158,7 +160,7 @@ class LeadSelfEnergy():
             # Calculate the "next guess" for g_s
             mat_to_invert = w * identity - H00 - sigma
             try:
-                g_s_new = np.linalg.inv(mat_to_invert)
+                g_s_new = np.linalg.solve(mat_to_invert, identity)
             except np.linalg.LinAlgError as e:
                 print(f"ERROR: Matrix inversion failed at iteration {i}. {e}")
                 return None # Or handle as appropriate
@@ -175,8 +177,7 @@ class LeadSelfEnergy():
                 return final_sigma
 
         print(f"Warning: RGF self-energy with mixing did not converge after {max_iter} iterations. Diff = {diff}")
-        final_sigma = H10 @ g_s @ H01
-        return final_sigma
+        return g_s
 
 
     
@@ -347,20 +348,22 @@ class LeadSelfEnergy():
             return np.zeros((H00.shape[0], H00.shape[0]), dtype=complex)
         Vsd = (self.ham.Vs + self.ham.Vd)
 
-        if side == "left":
-            E_lead = E - self.ham.mu1#- self.ham.Vs - (self.ham.Ef+Vsd/2)
+        # if side == "left":
+        #     E_lead = E - self.ham.mu1#- self.ham.Vs - (self.ham.Ef+Vsd/2)
             
-        else:  # right
-            E_lead = E - self.ham.mu2 #- self.ham.Vd - (self.ham.Ef-Vsd/2)
+        # else:  # right
+        #     E_lead = E - self.ham.mu2 #- self.ham.Vd - (self.ham.Ef-Vsd/2)
 
         # Calculate surface Green's function
         try:
-            G_surface = self.surface_greens_function(E_lead, H00, H01, method=method)
+            G_surface = self.surface_greens_function(E, H00, H01, method=method)
+           
+    
         except Exception as e:
             print(f"Warning: Surface GF calculation failed for {side} lead: {e}")
             n = H00.shape[0]
             eta = 1e-3
-            G_surface = linalg.pinv(self._add_eta(E_lead) * np.eye(n) - H00)
+            G_surface = linalg.pinv(self._add_eta(E) * np.eye(n) - H00)
 
         # Calculate self-energy
         if side == "left":
