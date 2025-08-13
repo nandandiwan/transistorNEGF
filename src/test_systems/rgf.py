@@ -52,7 +52,7 @@ class GreensFunction:
         self.Ec = -2 # need to change! self.identify_EC()
         
         self.additional_self_energies = False
-        # Büttiker probe parameters
+        # Buttiker probe parameters
         self.buttiker_probe_enabled = False
         self.buttiker_probe_strength = 0.00025  # Default strength from MATLAB script
         self.buttiker_probe_position = None  # Will be set to middle by default
@@ -121,7 +121,7 @@ class GreensFunction:
 
     def enable_buttiker_probe(self, strength=0.00025, position=None):
         """
-        Enable Büttiker probe for broadening resonances.
+        Enable Buttiker probe for broadening resonances.
         
         Args:
             strength (float): Imaginary self-energy strength (positive)
@@ -133,16 +133,16 @@ class GreensFunction:
         self.additional_self_energies = True
 
     def disable_buttiker_probe(self):
-        """Disable Büttiker probe."""
+        """Disable Buttiker probe."""
         self.buttiker_probe_enabled = False
         self.additional_self_energies = False
 
     def _compute_buttiker_probe_self_energy(self, E):
         """
-        Compute Büttiker probe self-energy matrix.
+        Compute Buttiker probe self-energy matrix.
         
         Returns:
-            scipy.sparse matrix: Büttiker probe self-energy
+            scipy.sparse matrix: Buttiker probe self-energy
         """
         if not self.buttiker_probe_enabled:
             return None
@@ -160,7 +160,7 @@ class GreensFunction:
 
     def _compute_buttiker_probe_transmission_correction(self, E, G_R, Gamma_L, Gamma_R):
         """
-        Compute transmission correction for Büttiker probe using the formula:
+        Compute transmission correction for Buttiker probe using the formula:
         T_corrected = T12 + (T13 * T23) / (T12 + T23)
         
         where:
@@ -171,7 +171,7 @@ class GreensFunction:
         if not self.buttiker_probe_enabled:
             return None
             
-        # Büttiker probe broadening function
+        # Buttiker probe broadening function
         Sigma_bp = self._compute_buttiker_probe_self_energy(E)
         Gamma_bp = 1j * (Sigma_bp - Sigma_bp.conj().T)
         
@@ -182,7 +182,7 @@ class GreensFunction:
         T13 = np.real(np.trace(Gamma_L @ G_R @ Gamma_bp @ G_A))  # Left to probe
         T23 = np.real(np.trace(Gamma_R @ G_R @ Gamma_bp @ G_A))  # Right to probe
         
-        # Corrected transmission using Büttiker probe formula
+        # Corrected transmission using Buttiker probe formula
         if T12 + T23 != 0:
             T_corrected = T12 + (T13 * T23) / (T12 + T23)
         else:
@@ -234,7 +234,7 @@ class GreensFunction:
         Sigma_L_full = Sigma_L_full.tocsc()
         Sigma_R_full = Sigma_R_full.tocsc()
         
-        # Add Büttiker probe self-energy if enabled
+        # Add Buttiker probe self-energy if enabled
         H_eff = H + Sigma_L_full + Sigma_R_full
         if self.additional_self_energies and self.buttiker_probe_enabled:
             Sigma_bp = self._compute_buttiker_probe_self_energy(E)
@@ -471,7 +471,7 @@ class GreensFunction:
             G_A_dense = G_R_dense.conj().T
             Gamma_L_dense = Gamma_L.toarray()
             Gamma_R_dense = Gamma_R.toarray()
-            # Use Büttiker probe corrected transmission
+            # Use Buttiker probe corrected transmission
             T = self._compute_buttiker_probe_transmission_correction(E, G_R_dense, Gamma_L_dense, Gamma_R_dense)
         else:
             # Standard transmission calculation
@@ -496,7 +496,7 @@ class GreensFunction:
 
     def compute_current_landauer(self, V_list, E_range=(-0.2, 0.8), N_E=101, self_energy_method=None):
         """
-        Compute current using Landauer-Büttiker formula for a voltage range.
+        Compute current using Landauer-Buttiker formula for a voltage range.
         
         
         Args:
