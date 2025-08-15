@@ -191,7 +191,8 @@ class GreensFunction:
         return T_corrected
 
     def compute_central_greens_function(self, E, ky=0,compute_lesser=True,
-                                        use_rgf=True, self_energy_method=None, equilibrium=False):
+                                        use_rgf=True, self_energy_method=None, equilibrium=False,
+                                        return_offdiag_lesser: bool = False):
         """
         Compute central region Green's function.
         """
@@ -202,11 +203,16 @@ class GreensFunction:
 
 
         if use_rgf:
-            return self._compute_rgf_greens_function(E, ky,compute_lesser, self_energy_method, equilibrium=equilibrium)
+            return self._compute_rgf_greens_function(E, ky,compute_lesser, self_energy_method,
+                                                     equilibrium=equilibrium,
+                                                     return_offdiag_lesser=return_offdiag_lesser)
         else:
-            return self._compute_direct_greens_function(E, ky,compute_lesser, self_energy_method, equilibrium=equilibrium)
+            return self._compute_direct_greens_function(E, ky,compute_lesser, self_energy_method,
+                                                        equilibrium=equilibrium,
+                                                        return_offdiag_lesser=return_offdiag_lesser)
 
-    def _compute_direct_greens_function(self, E, ky,compute_lesser, self_energy_method, equilibrium=False):
+    def _compute_direct_greens_function(self, E, ky,compute_lesser, self_energy_method, equilibrium=False,
+                                        return_offdiag_lesser: bool = False):
         """
         Direct matrix inversion for smaller systems using the smart_inverse utility.
         Uses general Hamiltonian.create_hamiltonian interface.
@@ -221,9 +227,12 @@ class GreensFunction:
         E = self.add_eta(E)
         
         pot = self.ham.get_potential(blocks = True)
-        left_pot = pot[0].toarray()[0,0]
-        right_pot = pot[-1].toarray()[0,0]
-
+        if pot!= None:
+            left_pot = pot[0].toarray()[0,0]
+            right_pot = pot[-1].toarray()[0,0]
+        else:
+            left_pot = 0
+            right_pot = 0
         
         sigma_L = self.lead_self_energy.self_energy("left", E - left_pot, ky, self_energy_method)
         sigma_R = self.lead_self_energy.self_energy("right", E - right_pot,ky, self_energy_method)
@@ -275,9 +284,23 @@ class GreensFunction:
         G_lesser = G_R @ Sigma_lesser @ G_A
         G_lesser_diag = G_lesser.diagonal()
 
-        return G_R, G_lesser_diag, Gamma_L, Gamma_R
+        if not return_offdiag_lesser:
+            return G_R, G_lesser_diag, Gamma_L, Gamma_R
 
-    def _compute_rgf_greens_function(self, E, ky,compute_lesser, self_energy_method, equilibrium=False):
+        # Extract nearest-neighbor off-diagonal lesser blocks if requested
+        # Determine block size from Hamiltonian blocks (robust when leads differ)
+        H_ii_blocks, H_ij_blocks = self.ham.create_hamiltonian(blocks=True, ky=ky)
+        bs = H_ii_blocks[0].shape[0]
+        nb = len(H_ii_blocks)
+        offdiag_less = []
+        for i in range(nb - 1):
+            r0 = i * bs
+            c0 = (i + 1) * bs
+            offdiag_less.append(G_lesser[r0:r0+bs, c0:c0+bs])
+        return G_R, G_lesser_diag, Gamma_L, Gamma_R, offdiag_less
+
+    def _compute_rgf_greens_function(self, E, ky,compute_lesser, self_energy_method, equilibrium=False,
+                                     return_offdiag_lesser: bool = False):
         """
         Generalized RGF computation using smart_inverse for all block inversions.
         Uses Hamiltonian.create_hamiltonian for block construction.
@@ -294,9 +317,16 @@ class GreensFunction:
 
         H_ii = [block.toarray() if sp.issparse(block) else block for block in H_ii]
         H_ij = [block.toarray() if sp.issparse(block) else block for block in H_ij]
-
-        sigma_L = self.lead_self_energy.self_energy("left", E, ky,self_energy_method)
-        sigma_R = self.lead_self_energy.self_energy("right", E, ky,self_energy_method)
+        pot = self.ham.get_potential(blocks = True)
+        if pot!= None:
+            left_pot = pot[0].toarray()[0,0]
+            right_pot = pot[-1].toarray()[0,0]
+        else:
+            left_pot = 0
+            right_pot = 0
+        
+        sigma_L = self.lead_self_energy.self_energy("left", E - left_pot, ky, self_energy_method)
+        sigma_R = self.lead_self_energy.self_energy("right", E - right_pot,ky, self_energy_method)
         
         # self_energy_shape = sigma_L.shape[0]
         # SE_H_factor = self_energy_shape / block_size
@@ -347,6 +377,8 @@ class GreensFunction:
 
         G_R = [None] * num_blocks
         G_lesser = [None] * num_blocks
+        # Optional storage for nearest-neighbor off-diagonal lesser blocks: G^<_{i,i+1}
+        G_lesser_offdiag_right = [None] * (num_blocks - 1)
 
         # Backward sweep - using smart_inverse
         H_N_Nm1 = dagger(H_ij[-1])
@@ -373,13 +405,23 @@ class GreensFunction:
                 term4 = (g_R[i] @ H_i_ip1 @ G_lesser[i + 1] @ H_ip1_i @ g_R_dag)
                 G_lesser[i] = term1 + term2 + term3 + term4
 
+                # Also compute nearest-neighbor off-diagonal lesser using full-G relation:
+                # G_{i,i+1}^< = G_{i,i}^R H_{i,i+1} G_{i+1,i+1}^< + G_{i,i}^< H_{i,i+1} G_{i+1,i+1}^A
+                G_ip1_A = dagger(G_R[i + 1])
+                off_term_R = G_R[i] @ H_i_ip1 @ G_lesser[i + 1]
+                off_term_L = G_lesser[i] @ H_i_ip1 @ G_ip1_A
+                G_lesser_offdiag_right[i] = off_term_R + off_term_L
+
         G_R_diag = np.concatenate([np.diag(block) for block in G_R])
 
         if not compute_lesser:
             return G_R_diag, Gamma_L, Gamma_R
 
         G_lesser_diag = np.concatenate([np.diag(block) for block in G_lesser])
-        return G_R_diag, G_lesser_diag, Gamma_L, Gamma_R
+        if not return_offdiag_lesser:
+            return G_R_diag, G_lesser_diag, Gamma_L, Gamma_R
+
+        return G_R_diag, G_lesser_diag, G_lesser_offdiag_right, Gamma_L, Gamma_R 
     
 
 
@@ -565,7 +607,7 @@ class GreensFunction:
             return self.dE * pref * T_E * (f_L - f_R)
 
 
-        G_R_diag, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
+        G_R_diag, G_lesser_diag, G_lesser_offdiag_right, Gamma_L, Gamma_R  = self.compute_central_greens_function(
             E, ky=ky, use_rgf=True, self_energy_method=self_energy_method, compute_lesser=True
         )
         f_L = self.fermi_distribution(E, self.ham.mu1)
@@ -674,7 +716,14 @@ class GreensFunction:
     
     def _charge_worker(self, param):
         E, ky, self_energy_method, use_rgf = param
-        G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
+        
+        if use_rgf == False:
+            G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
+            E, ky=ky, use_rgf=False, self_energy_method=self_energy_method, compute_lesser=True)
+            G_n_diag = -1j * G_lesser_diag
+            return self.dE * G_n_diag * 1 / (2 * np.pi)
+            
+        G_R_diag, G_lesser_diag, G_lesser_offdiag_right, Gamma_L, Gamma_R  = self.compute_central_greens_function(
             E, ky=ky, use_rgf=use_rgf, self_energy_method=self_energy_method, compute_lesser=True
         )
         G_n_diag = -1j * G_lesser_diag
