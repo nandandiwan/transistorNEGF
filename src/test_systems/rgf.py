@@ -326,8 +326,9 @@ class GreensFunction:
             right_pot = 0
         
         sigma_L = self.lead_self_energy.self_energy("left", E - left_pot, ky, self_energy_method)
+        sigma_L = sigma_L[:block_size, :block_size]
         sigma_R = self.lead_self_energy.self_energy("right", E - right_pot,ky, self_energy_method)
-        
+        sigma_R = sigma_R[-block_size:, -block_size:]
         # self_energy_shape = sigma_L.shape[0]
         # SE_H_factor = self_energy_shape / block_size
         # for imat in range(SE_H_factor):
