@@ -297,7 +297,7 @@ class GreensFunction:
             r0 = i * bs
             c0 = (i + 1) * bs
             offdiag_less.append(G_lesser[r0:r0+bs, c0:c0+bs])
-        return G_R, G_lesser_diag, Gamma_L, Gamma_R, offdiag_less
+        return G_R, G_lesser_diag,offdiag_less,Gamma_L, Gamma_R, 
 
     def _compute_rgf_greens_function(self, E, ky,compute_lesser, self_energy_method, equilibrium=False,
                                      return_offdiag_lesser: bool = False):
@@ -420,7 +420,7 @@ class GreensFunction:
 
         G_lesser_diag = np.concatenate([np.diag(block) for block in G_lesser])
         if not return_offdiag_lesser:
-            return G_R_diag, G_lesser_diag, Gamma_L, Gamma_R
+            return G_R_diag, G_lesser_diag, G_lesser_offdiag_right, Gamma_L, Gamma_R 
 
         return G_R_diag, G_lesser_diag, G_lesser_offdiag_right, Gamma_L, Gamma_R 
     
@@ -544,58 +544,7 @@ class GreensFunction:
         T = self.compute_transmission(E=E_F, self_energy_method=self_energy_method)
         return T
 
-    def compute_current_landauer(self, V_list, E_range=(-0.2, 0.8), N_E=101, self_energy_method=None):
-        """
-        Compute current using Landauer-Buttiker formula for a voltage range.
-        
-        
-        Args:
-            V_list: List of bias voltages to calculate
-            E_range: Energy integration range (E_min, E_max)
-            N_E: Number of energy points
-            self_energy_method: Method for self-energy calculation
-            
-        Returns:
-            list: Current values for each voltage
-        """
-        # Physical constants (from MATLAB script)
-        hbar = 1.0545718e-34  # J⋅s
-        q = 1.60217662e-19    # C
-        IE = q**2 / (np.pi * hbar)  # Conductance quantum factor
-        
-        Ef = self.ham.Ef  # Fermi energy in eV
-        kT = self.ham.kbT_eV  # Thermal energy in eV
-        
-        # Energy grid
-        E_min, E_max = E_range
-        E = np.linspace(E_min, E_max, N_E)
-        dE = E[1] - E[0]
-        
-        current_list = []
-        
-        for V in V_list:
-            # Chemical potentials
-            mu1 = Ef + V/2  # Source
-            mu2 = Ef - V/2  # Drain
-            
-            # Set the voltages in the Hamiltonian
-            self.ham.set_voltage(Vs=V/2, Vd=-V/2)
-            
-            # Fermi distributions
-            f1 = 1.0 / (1.0 + np.exp((E - mu1) / kT))
-            f2 = 1.0 / (1.0 + np.exp((E - mu2) / kT))
-            
-            # Integrate current
-            I = 0.0
-            for k, Ek in enumerate(E):
-                T_k = self.compute_transmission(Ek, self_energy_method=self_energy_method)
-                I += dE * IE * T_k * (f1[k] - f2[k])
-            
-            current_list.append(I)
-            print(f"V = {V:.3f} V, I = {I*1e6:.4f} μA")
-        
-        return current_list    
-    
+
     def _current_worker(self, param):
         """Worker for multiprocessing: computes current for (E, ky)."""
         E, ky, self_energy_method, use_rgf = param
@@ -719,7 +668,7 @@ class GreensFunction:
         E, ky, self_energy_method, use_rgf = param
         
         if use_rgf == False:
-            G_R, G_lesser_diag, Gamma_L, Gamma_R = self.compute_central_greens_function(
+            G_R, G_lesser_diag, G_lesser_off, Gamma_L, Gamma_R = self.compute_central_greens_function(
             E, ky=ky, use_rgf=False, self_energy_method=self_energy_method, compute_lesser=True)
             G_n_diag = -1j * G_lesser_diag
             return self.dE * G_n_diag * 1 / (2 * np.pi)
@@ -1096,9 +1045,9 @@ class GreensFunction:
         """Uses chandrupatla algorithm"""
         
         # come up with better estimate
-        if (lower_bound == None ):
+        if (type(lower_bound) != np.ndarray):
             lower_bound = np.ones_like(V) * -1
-        if (upper_bound == None):
+        if (type(upper_bound) != np.ndarray):
             upper_bound = np.ones_like(V) * 2
         
         n_negf = self.compute_charge_density()

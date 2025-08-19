@@ -83,6 +83,7 @@ class GrapehenearmchairCell:
         
         self.layer = self.create_first_layer()
         self.structure = self.create_full_structure()
+        self.ATOM_POSITIONS = self.structure
         
         self.sublattice = {}
         
@@ -178,7 +179,7 @@ class SiliconUnitCell:
         (2,3,0,1) : Atom(0,0.5,0),
         (3,0,1,2) : Atom(0,0.75, 0.25),
         (0,3,2,1) : Atom(0,0,0),
-        (1,0,3,1) : Atom(0,0.25,0.25),
+        (1,0,3,2) : Atom(0,0.25,0.25),
         (2,1,0,3) : Atom(0,0.5,0),
         (3,2,1,0) : Atom(0,0.75, 0.25)
     } 
@@ -212,7 +213,7 @@ class SiliconUnitCell:
         (2,3,0,1) : Atom(0,0.5,0),
         (3,0,1,2) : Atom(0,0.75, 0.25),
         (0,3,2,1) : Atom(0,0,0),
-        (1,0,3,1) : Atom(0,0.25,0.25),
+        (1,0,3,2) : Atom(0,0.25,0.25),
         (2,1,0,3) : Atom(0,0.5,0),
         (3,2,1,0) : Atom(0,0.75, 0.25)
     } 
@@ -253,9 +254,12 @@ class SiliconUnitCell:
         Builds the nanowire unit cell. 
         
         """
+        self.periodic = periodic
         self.Nz = channel_thickness_blocks
         self.Nx = channel_length_blocks
         self.Ny = channel_width_blocks
+        if self.periodic:
+            self.Ny = 1
         self.raw_deltas = {
             ((0 + SiliconUnitCell.classify_permutation(orientation)) % 2): [(+0.25, +0.25, +0.25), (+0.25, -0.25, -0.25),
                 (-0.25, +0.25, -0.25), (-0.25, -0.25, +0.25)],
@@ -265,6 +269,7 @@ class SiliconUnitCell:
         self.ATOM_POSITIONS = [] # the order of atoms in this cell is very important as this governs the layer structure 
         self.neighbors = {}
         self.danglingBonds = {}
+        self.periodicBonds = {}
         self.addAtoms(SiliconUnitCell.orientation_to_start[orientation])
         self.map_neighbors_and_dangling_bonds()
         self.atoms_by_layer = self.split_into_layers()
@@ -306,22 +311,59 @@ class SiliconUnitCell:
         """
         self.neighbors = {}
         self.danglingBonds = {}
+        self.periodicBonds = {}
         atom_set = set(self.ATOM_POSITIONS)
         for atom in self.ATOM_POSITIONS:
             sublattice = SiliconUnitCell._sublattice(atom)
             self.neighbors[atom] = []
             self.danglingBonds[atom] = []
+            self.periodicBonds[atom] = []
             for delta in self.raw_deltas[sublattice]:
                 neighbor = atom.add(delta)
-                # Ignore dangling bonds in X direction
-                if not self.check_in_y_direction(neighbor) or not self.check_in_z_direction(neighbor):
-                    self.danglingBonds[atom].append((neighbor, SiliconUnitCell.determine_hybridization(delta)))   
-                elif self.check_in_x_direction(neighbor):
-                    # Only add as neighbor if inside cell in all directions
-                    if neighbor in atom_set:
-                        l, m, n = SiliconUnitCell.directionalCosine(delta)
-                        self.neighbors[atom].append((neighbor, delta, l, m, n))
-                    
+                # We do not export X-direction out-of-bounds as dangling because
+                # those couplings are handled as inter-layer (H01/H10) within the device.
+
+                if self.periodic:
+                    inside_x = self.check_in_x_direction(neighbor)
+                    inside_y = self.check_in_y_direction(neighbor)
+                    inside_z = self.check_in_z_direction(neighbor)
+
+                    if not inside_z:
+                        # Out of Z is a true dangling bond; encode hybridization index
+                        self.danglingBonds[atom].append((neighbor, SiliconUnitCell.determine_hybridization(delta)))
+                        continue
+
+                    l, m, n = SiliconUnitCell.directionalCosine(delta)
+
+                    if inside_x and inside_y:
+                        if neighbor in atom_set:
+                            self.neighbors[atom].append((neighbor, delta, l, m, n))
+                        continue
+
+                    if inside_x and not inside_y:
+                        # Wrap across periodic Y and record as periodic bond
+                        wrapped_y = neighbor.y % self.Ny
+                        # Determine direction of wrapping: +1 means crossing from top (y >= Ny) to bottom; -1 means bottom to top (y < 0)
+                        shift = 1 if neighbor.y >= self.Ny else -1
+                        wrapped = Atom(neighbor.x, wrapped_y, neighbor.z)
+                        if wrapped in atom_set:
+                            # Store the direction 'shift' to disambiguate +Y vs -Y couplings for Bloch assembly
+                            self.periodicBonds[atom].append((wrapped, delta, l, m, n, shift))
+                        else:
+                            # If the wrapped atom doesn't exist, treat as dangling for safety
+                            self.danglingBonds[atom].append((neighbor, SiliconUnitCell.determine_hybridization(delta)))
+                        continue
+
+                    # If X is out-of-bounds, ignore here; handled by block coupling along X
+                else:
+                    if (not self.check_in_y_direction(neighbor)) or (not self.check_in_z_direction(neighbor)):
+                        # Non-periodic in Y: anything outside Y or Z is a dangling bond
+                        self.danglingBonds[atom].append((neighbor, SiliconUnitCell.determine_hybridization(delta)))
+                    elif self.check_in_x_direction(neighbor):
+                        if neighbor in atom_set:
+                            l, m, n = SiliconUnitCell.directionalCosine(delta)
+                            self.neighbors[atom].append((neighbor, delta, l, m, n))
+                        
     def get_neighbors(self, atom: Atom):
         """Return a list of neighboring Atom objects using raw_deltas and sublattice."""
         sublattice = SiliconUnitCell._sublattice(atom)

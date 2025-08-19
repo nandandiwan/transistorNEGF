@@ -58,8 +58,8 @@ class TightBindingHamiltonian:
         self.vbmValue = [0, -np.inf]
         
     def create_tight_binding(self,k, N=1, getMatrix = False):
-        kx, ky = 4 / np.sqrt(2)* k
-
+        # kx, ky = 4 / np.sqrt(2)* k
+        kx, ky =  k
         
         #print(N)
     
@@ -103,7 +103,12 @@ class TightBindingHamiltonian:
                 index_i = atom_index * numOrbitals + orbitalIndex
                 for neighbor in neighbors:
                     atom2, delta, l,m,n = neighbor
-                    phase = np.exp(2 * np.pi * 1j * (kx*delta[0] + ky*delta[1])) # blochs theorem does not work 
+                    check = 1
+                    new_atom = atom.add(delta)
+                    if new_atom == atom2:
+                        check = 0
+                    
+                    phase = np.exp(2 * np.pi * 1j * (kx*l + ky*m) * check) # blochs theorem does not work 
                     neighbor_index = atomToIndex[atom2]      
                     for secOrbitalIndex, secondOrbital in enumerate(orbitals):
                         index_j = neighbor_index * numOrbitals + secOrbitalIndex
@@ -125,8 +130,8 @@ class TightBindingHamiltonian:
     def create_tight_binding_sparse(self,k, N=1, potentialProfile=None, sigma=0.5, eigRange=10):
         
     
-        kx, ky =4 / np.sqrt(2)* k
-
+        #kx, ky =4 / np.sqrt(2)* k
+        kx, ky = k
         
         #print(N)
         unitNeighbors = self.unitCell.neighbors
@@ -201,7 +206,12 @@ class TightBindingHamiltonian:
                 if j < atom_index:             
                     continue                   
 
-                phase = np.exp(2j*np.pi*(kx*delta[0] + ky*delta[1]))
+                check = 1
+                new_atom = atom.add(delta)
+                if new_atom == atom2:
+                    check = 0
+                
+                phase = np.exp(2 * np.pi * 1j * (kx*l + ky*m) * check) # blochs theorem does not work 
 
                 for o1, orb1 in enumerate(orbitals):
                     for o2, orb2 in enumerate(orbitals):
@@ -603,6 +613,7 @@ class TightBindingHamiltonian:
     
     def getCBM(self, k = np.asarray([0,0])):
         cbm,_,_,_ = self.getBandValues(k)
+        return cbm
 
     def get_potential_matrix(self):
         """This function returns the matr"""

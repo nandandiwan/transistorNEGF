@@ -16,7 +16,7 @@ class Hamiltonian:
     Constructs tight-binding Hamiltonians for various device structures.
     """
     def __init__(self, name, periodic = False, relevant_parameters = {}):
-        if((periodic and name != "armchair")):
+        if((periodic and (name != "armchair" and name != "silicon"))):
             raise ValueError("periodic not available or possible")
         self.T = 300  # Use the passed temperature parameter
         self.q = spc.elementary_charge
@@ -72,7 +72,7 @@ class Hamiltonian:
         
         #zig zag
         self.Nx = 10
-        self.Ny = 10
+        self.Ny = 5
         self.periodic = periodic
         self.H0 = None
         self.T0 = None
@@ -113,7 +113,7 @@ class Hamiltonian:
             
     
     def get_num_sites(self):
-        if (self.name == "one_d_wire" or self.name == "modified_one_d"):
+        if (self.name == "one_d_wire" or self.name == "ssh"):
             return self.N
         elif (self.name == "qpc"):
             return self.W * self.L
@@ -168,25 +168,6 @@ class Hamiltonian:
                 A[i, i] = o
             return sp.csc_matrix(A) 
         
-    def modified_one_d_wire(self, blocks=True):
-        t, o, N = self.t, self.o, self.N
-        if blocks:
-            diag, offdiag =  ([sp.eye(1) * o] * N), ([sp.eye(1) * -t] * (N - 1))
-            diag[N//2] += sp.eye(1) * 5
-            #diag[N//2 + 1] += sp.eye(1) * 5
-            return diag, offdiag
-            
-        else:
-            A = np.zeros((N, N))
-            for i in range(N):
-                if i < N - 1:
-                    A[i, i + 1] = -t
-                    A[i + 1, i] = -t
-                A[i, i] = o
-                
-            A[N//2, N//2] = 5
-            #A[N//2+1, N//2+1] = 5
-            return sp.csc_matrix(A) 
     def create_1d_hamiltonian(self, t, o, N, blocks=True):
         """Return blocks or full matrix for 1D wire."""
         if blocks:
@@ -262,7 +243,37 @@ class Hamiltonian:
                         A[idx, idx_next] = t
                         A[idx_next, idx] = t
             return sp.csc_matrix(A)
-    
+
+    def build_ssh_hamiltonian(self, blocks = True, ky=0, t1 = 1.0, t2=0.5, on_site_energy=0.0, pbc=False):
+        N = self.N // 2
+        dim = self.N
+        H = np.zeros((dim, dim))
+        np.fill_diagonal(H, on_site_energy)
+
+        for n in range(N):
+            idx_A = 2 * n
+            idx_B = 2 * n + 1
+
+            H[idx_A, idx_B] = t1
+            H[idx_B, idx_A] = t1 # Ensure the matrix is Hermitian
+
+            if n < N - 1: 
+                idx_A_next = 2 * (n + 1)
+                H[idx_B, idx_A_next] = t2
+                H[idx_A_next, idx_B] = t2
+
+        if pbc and N > 1:
+            last_B_idx = 2 * (N - 1) + 1
+            first_A_idx = 0
+            H[last_B_idx, first_A_idx] = t2
+            H[first_A_idx, last_B_idx] = t2
+
+        
+        if blocks:
+            diag, off_diag = Hamiltonian._convert_to_blocks(H, 2)
+            return diag, off_diag
+        return sp.csc_matrix(H)
+
     def armchair_hamiltonian(self, blocks, t=-2.7, onsite_potential=0.0, ky=0.0):
         """
         Builds the tight-binding Hamiltonian for the armchair nanoribbon structure.
@@ -289,7 +300,7 @@ class Hamiltonian:
             if (not blocks):
                 return H_eff
             else:
-                return self._convert_to_blocks(H_eff, 4)
+                return Hamiltonian._convert_to_blocks(H_eff, 4)
             
         else:
             num_atoms_total = len(unitCell.structure)
@@ -433,7 +444,7 @@ class Hamiltonian:
             
         return H_full.tocsr()
         
-    def _convert_to_blocks(self, H_full, atoms_per_layer):
+    def _convert_to_blocks(H_full, atoms_per_layer):
         """Convert full matrix to block format."""
         diagonal_blocks = []
         off_diagonal_blocks = []
@@ -446,14 +457,14 @@ class Hamiltonian:
             
             # Extract diagonal block
             H_ii = H_full[start_idx:end_idx, start_idx:end_idx]
-            diagonal_blocks.append(sp.csr_matrix(H_ii))
+            diagonal_blocks.append(sp.csc_matrix(H_ii))
             
             # Extract off-diagonal block (if not last layer)
             if i < num_layers - 1:
                 start_j = (i + 1) * atoms_per_layer
                 end_j = start_j + atoms_per_layer
                 H_ij = H_full[start_idx:end_idx, start_j:end_j]
-                off_diagonal_blocks.append(sp.csr_matrix(H_ij))
+                off_diagonal_blocks.append(sp.csc_matrix(H_ij))
                 
         return diagonal_blocks, off_diagonal_blocks
 
@@ -463,10 +474,16 @@ class Hamiltonian:
         if self.periodic is False:
             return self._base_silicon_hamiltonian(blocks, ky, unit_cell)
         else:
-            # TODO: implement periodic silicon if needed
-            return self._base_silicon_hamiltonian(blocks, ky, unit_cell)
+            H = self._base_silicon_hamiltonian(False, unit_cell)
+            T0 = self._perioidic_silicon_hamiltonian(False, unit_cell)
+            H_eff = H + T0 * np.exp(np.pi * ky * 1j) + T0.conj().T * np.exp(-np.pi * ky * 1j)
+            
+            if not blocks:
+                return H_eff
+            else:
+                return Hamiltonian._convert_to_blocks(H_eff, 20 * self.Ny * self.Nz)
         
-    def _base_silicon_hamiltonian(self, blocks=True, ky=0, unit_cell = None):
+    def _base_silicon_hamiltonian(self, blocks=True, unit_cell = None):
         temp_cell = self.unit_cell
         if (unit_cell != None):
             self.unit_cell = unit_cell
@@ -504,7 +521,7 @@ class Hamiltonian:
             hybridizationMatrix = self.H_sp3_explicit.copy()
             danglingBondsList = danglingBonds[atom]
             for danglingBondAtom, position in danglingBondsList:
-                hybridizationMatrix[position, position] += TBP.E['sp3'] + 200
+                hybridizationMatrix[position, position] += TBP.E['sp3']-  20
 
             # transform to (s, px, py, pz) basis
             onsiteMatrix = self.U_orb_to_sp3 @ hybridizationMatrix @ self.U_orb_to_sp3.T
@@ -537,7 +554,7 @@ class Hamiltonian:
             self.unit_cell = temp_cell
             return H
         total_size = H.shape[0]
-        block_size = self.si_thickness * 20  *self.unit_cell.Nx # 2 atoms per single unit z layer 
+        block_size = self.si_thickness * 20  *self.unit_cell.Ny # 2 atoms per single unit z layer 
         num_blocks = (int) (total_size // block_size)
         diagonal_blocks = [None] * num_blocks
         off_diagonal_blocks = [None] * (num_blocks - 1)
@@ -552,21 +569,85 @@ class Hamiltonian:
         self.unit_cell = temp_cell
         return diagonal_blocks, off_diagonal_blocks
         
-    
+    def _perioidic_silicon_hamiltonian(self, blocks=True, unit_cell=None):
+        temp_cell = self.unit_cell
+        if unit_cell is not None:
+            self.unit_cell = unit_cell
+        if self.unit_cell is None:
+            self.unit_cell = SiliconUnitCell(self.si_length, self.si_width, self.si_thickness, self.periodic)
+            temp_cell = self.unit_cell
+
+        # Build T0 across periodic Y boundaries only
+        unitNeighbors = self.unit_cell.neighbors
+        periodic_bonds = self.unit_cell.periodicBonds
+        numSilicon = len(unitNeighbors.keys())
+
+        orbitals = ['s', 'px', 'py', 'pz', 'dxy', 'dyz', 'dzx', 'dx2y2', 'dz2', 's*']
+        n_orb = len(orbitals)
+        size = numSilicon * n_orb
+
+        atomToIndex = {}
+        indexToAtom = {}
+        for atom_index, atom in enumerate(unitNeighbors):
+            atomToIndex[atom] = atom_index
+            indexToAtom[atom_index] = atom
+
+        rows, cols, data = [], [], []
+
+        def add_nonhermitian(i, j, val):
+            if val != 0.0:
+                rows.append(i)
+                cols.append(j)
+                data.append(val)
+
+        # Only add +Y periodic couplings to T0; -Y are handled by T0^† when forming H_eff
+        for atom_index, atom in indexToAtom.items():
+            base_i = atom_index * n_orb
+            for bond in periodic_bonds[atom]:
+                if len(bond) == 6:
+                    atom2, delta, l, m, n, shift = bond
+                else:
+                    atom2, delta, l, m, n = bond
+                    shift = 0
+                if shift == -1:
+                    continue
+                j = atomToIndex[atom2]
+                base_j = j * n_orb
+                for o1, orb1 in enumerate(orbitals):
+                    for o2, orb2 in enumerate(orbitals):
+                        hop = TBP.SK[(orb1, orb2)](l, m, n, TBP.V)
+                        add_nonhermitian(base_i + o1, base_j + o2, hop)
+
+        T0 = sp.coo_matrix((data, (rows, cols)), shape=(size, size)).tocsc()
+        if blocks is False:
+            self.unit_cell = temp_cell
+            return T0
+
+        total_size = T0.shape[0]
+        block_cols = self.si_thickness * 20 * self.unit_cell.Ny
+        num_blocks = int(total_size // block_cols)
+        off_diagonal_blocks = [None] * (num_blocks - 1)
+        for block in range(0, num_blocks - 1):
+            s = block * block_cols
+            m = (block + 1) * block_cols
+            e = (block + 2) * block_cols
+            off_diagonal_blocks[block] = T0[s:m, m:e]
+        self.unit_cell = temp_cell
+        return off_diagonal_blocks
     def create_hamiltonian(self, blocks=True, ky=0, no_pot=False):
         """
         General interface to get the Hamiltonian for the specified device type.
         """
         if self.name in self.hamiltonian_registry:
-            H = self.hamiltonian_registry[self.name](self, blocks, ky)
+            H = self.hamiltonian_registry[self.name](blocks, ky)
         elif self.name == "armchair":
             H = self.armchair_hamiltonian(blocks, ky=ky)
+        elif self.name == "ssh":
+            H = self.build_ssh_hamiltonian(blocks, ky=0)
         elif self.name ==  "one_d_wire":
             H = self.one_d_wire(blocks=blocks)
         elif self.name == "quantum_point_contact" or self.name == "qpc":
             H = self.quantum_point_contact(blocks=blocks)
-        elif self.name == "modified_one_d":
-            H = self.modified_one_d_wire(blocks)
         elif self.name == "silicon":
             H = self.silicon_hamiltonian(blocks, ky)
         else:
@@ -585,7 +666,7 @@ class Hamiltonian:
         side is irrelevant where orientation is not important 
         """
         if self.name in self.lead_registry:
-            return self.lead_registry[self.name](self, ky)
+            return self.lead_registry[self.name](ky)
         if self.name == "one_d_wire" or self.name == "chain" or self.name =="modified_one_d":
             # For leads, extract uniform blocks without adding the device potential profile
             diag, offdiag = self.create_hamiltonian(True, ky, no_pot=True)
@@ -603,6 +684,13 @@ class Hamiltonian:
             H10 = H01.T # Assuming real hopping t
             
             return H00, H01, H10
+        
+        if self.name == "ssh":
+            diag, offdiag = self.create_hamiltonian(True, ky, no_pot=True)
+            H00 = diag[0]
+            H01 = offdiag[0]
+            H10 = H01.T.conj()
+            return H00, H01, H10            
         
         if self.name == "armchair":
 
@@ -680,15 +768,6 @@ class Hamiltonian:
             x = np.concatenate(diag_list)
             return sp.csc_matrix(np.diag(x))
     
-    def atom_to_potential(self, atom_to_pot : dict, unit_cell):
-        pot_array = [None] * (len(unit_cell.ATOM_POSITIONS))
-        
-        for atom_idx,atom in enumerate(unit_cell.ATOM_POSITIONS):
-            pot = atom_to_pot[atom]
-            pot_array[atom_idx] = sp.eye(self.num_orbitals) * pot
-        
-        self.potential = pot_array
-    
     def set_potential(self, pot):
         if (self.name == "one_d_wire"):
             self.potential = pot
@@ -713,81 +792,7 @@ class Hamiltonian:
             pot_matrix = self.get_potential(blocks)
             return hamiltonian + np.diag(pot_matrix)
     
-    def set_barrier_potential(self, positions, height, width=1):
-        """
-        Set a barrier potential at specified positions.
-        
-        Args:
-            positions (list or int): Position(s) where to place barrier
-            height (float): Height of the barrier in eV
-            width (int): Width of each barrier in sites
-        """
-        N = self.get_num_sites()
-        if self.potential is None:
-            self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(N)]
-        
-        if isinstance(positions, int):
-            positions = [positions]
-            
-        for pos in positions:
-            for i in range(width):
-                if 0 <= pos + i < N:
-                    self.potential[pos + i] += sp.eye(self.num_orbitals) * height
-    
-    def set_linear_potential(self, V_start, V_end, middle_third=False):
-
-        N = self.get_num_sites()
-        self.potential = []
-
-        if middle_third:
-            n1 = N // 3
-            n2 = 2 * N // 3
-
-            for i in range(N):
-                if i < n1:
-
-                    V = V_start
-                elif i >= n2:
-                    V = V_end
-                else:
-                    ramp_i = i - n1
-                    ramp_len = n2 - n1
-                    V = V_start + (V_end - V_start) * ramp_i / (ramp_len - 1)
-
-                self.potential.append(sp.eye(self.num_orbitals) * V)
-        else:
-
-            for i in range(N):
-                V = V_start + (V_end - V_start) * i / (N - 1)
-                self.potential.append(sp.eye(self.num_orbitals) * V)
-    def set_double_barrier_potential(self, barrier1_pos, barrier2_pos, barrier_height, barrier_width=2, well_depth=0.0):
-        """
-        Set a double barrier potential with a quantum well.
-        
-        Args:
-            barrier1_pos (int): Position of first barrier
-            barrier2_pos (int): Position of second barrier  
-            barrier_height (float): Height of barriers in eV
-            barrier_width (int): Width of each barrier in sites
-            well_depth (float): Depth of quantum well (negative for well)
-        """
-        N = self.get_num_sites()
-        self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(N)]
-        
-        # Set barriers
-        for i in range(barrier_width):
-            if 0 <= barrier1_pos + i < N:
-                self.potential[barrier1_pos + i] += sp.eye(self.num_orbitals) * barrier_height
-            if 0 <= barrier2_pos + i < N:
-                self.potential[barrier2_pos + i] += sp.eye(self.num_orbitals) * barrier_height
-        
-        # Set quantum well between barriers
-        well_start = barrier1_pos + barrier_width
-        well_end = barrier2_pos
-        for i in range(well_start, well_end):
-            if 0 <= i < N:
-                self.potential[i] += sp.eye(self.num_orbitals) * well_depth
-    
+ 
     def clear_potential(self):
         """Clear all potential."""
         self.potential = None
@@ -815,86 +820,5 @@ class Hamiltonian:
         """Register a new lead function."""
         self.lead_registry[name] = func
 
-    def setup_ballistic_device(self, NS=15, NC=30, ND=15):
-        """
-        Setup ballistic device (no barriers) as in MATLAB script.
-        """
-        self.name = "one_d_wire"
-        self.N = NS + NC + ND
-        self.clear_potential()  # No barriers
-        print(f"Setup ballistic device: NS={NS}, NC={NC}, ND={ND}, Total={self.N}")
 
-    def setup_tunneling_device(self, NS=23, NC=4, ND=23, barrier_height=0.4):
-        """
-        Setup tunneling barrier device as in MATLAB script.
-        """
-        self.name = "one_d_wire"
-        self.N = NS + NC + ND
-        
-        # Set uniform barrier in channel region
-        self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(self.N)]
-        for i in range(NS, NS + NC):
-            self.potential[i] = sp.eye(self.num_orbitals) * barrier_height
-            
-        print(f"Setup tunneling device: NS={NS}, NC={NC}, ND={ND}, barrier={barrier_height} eV")
-
-    def setup_resonant_tunneling_device(self, NS=15, NC=16, ND=15, barrier_height=0.4, barrier_width=4):
-        """
-        Setup resonant tunneling device (double barrier) as in MATLAB script.
-        UB=[zeros(NS,1);0.4*ones(4,1);zeros(NC-8,1);0.4*ones(4,1);zeros(ND,1)]
-        """
-        self.name = "one_d_wire"
-        self.N = NS + NC + ND
-        
-        # Initialize potential
-        self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(self.N)]
-        
-        # First barrier: positions NS to NS+barrier_width-1
-        for i in range(NS, NS + barrier_width):
-            self.potential[i] = sp.eye(self.num_orbitals) * barrier_height
-            
-        # Second barrier: positions NS+NC-barrier_width to NS+NC-1
-        for i in range(NS + NC - barrier_width, NS + NC):
-            self.potential[i] = sp.eye(self.num_orbitals) * barrier_height
-            
-        print(f"Setup resonant tunneling device: NS={NS}, NC={NC}, ND={ND}")
-        print(f"Double barriers: width={barrier_width}, height={barrier_height} eV")
-
-    def apply_bias_potential(self, V):
-        """
-        Apply bias potential as in MATLAB script:
-        U1 = V * [0.5*ones(1,NS) linspace(0.5,-0.5,NC) -0.5*ones(1,ND)]
-        """
-        NS = 15  # Assuming standard device structure
-        NC = self.N - 30  # Channel length
-        ND = 15
-        
-        if self.potential is None:
-            self.potential = [sp.eye(self.num_orbitals) * 0.0 for _ in range(self.N)]
-        
-        # Source region: V/2
-        for i in range(NS):
-            if i < len(self.potential):
-                self.potential[i] += sp.eye(self.num_orbitals) * (V * 0.5)
-        
-        # Channel region: linear drop from V/2 to -V/2
-        for i in range(NS, NS + NC):
-            if i < len(self.potential):
-                # Linear interpolation
-                x = (i - NS) / (NC - 1) if NC > 1 else 0
-                V_local = V * (0.5 - x)
-                self.potential[i] += sp.eye(self.num_orbitals) * V_local
-        
-        # Drain region: -V/2
-        for i in range(NS + NC, self.N):
-            if i < len(self.potential):
-                self.potential[i] += sp.eye(self.num_orbitals) * (V * (-0.5))
-        
-
-    
-    def device_interpolation(self, array : np.ndarray, smear : bool):
-        if smear:
-            final_shape = self.get_device_dimensions()
-        else:
-            return None
         

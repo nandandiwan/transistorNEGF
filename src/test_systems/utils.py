@@ -178,7 +178,7 @@ def chandrupatla(f, x0, x1, verbose=False,
             print(f"Bracket check failed at indices {bad}")
         #raise ValueError(f"Chandrupatla: supplied bounds do not bracket a root at indices {bad}")
         print("doubling range")
-        chandrupatla(f, 3 * x0, 3*x1)
+        chandrupatla(f, 3 * x0, 3*x1, args=args)
 
     c = a.copy()
     fc = fa.copy()
@@ -313,4 +313,140 @@ def chandrupatla(f, x0, x1, verbose=False,
         return roots, iterations
     return roots
     
-    
+from unit_cell_generation import Atom
+def gaussian_broadening_interpolation(atom_pos : list[Atom], values : np.ndarray, final_dim : tuple) -> np.ndarray:
+    """maps from atomistic grid to evenly spaced grid of dimensions final_dim"""
+    # Validate inputs
+    if not isinstance(final_dim, tuple) or len(final_dim) not in (1, 2, 3):
+        raise ValueError("final_dim must be a tuple of length 1, 2, or 3 (e.g., (Nx,), (Nx,Ny), (Nx,Ny,Nz))")
+
+    if len(atom_pos) == 0:
+        return np.zeros(final_dim, dtype=values.dtype if isinstance(values, np.ndarray) else float)
+
+    values = np.asarray(values)
+    if values.shape[0] != len(atom_pos):
+        raise ValueError("values length must match number of atoms in atom_pos")
+
+    # Prepare positions array based on requested dimensionality
+    dims = len(final_dim)
+    pos = np.empty((len(atom_pos), dims), dtype=float)
+    for i, a in enumerate(atom_pos):
+        if dims == 1:
+            pos[i, 0] = a.x
+        elif dims == 2:
+            pos[i, 0] = a.x; pos[i, 1] = a.y
+        else:
+            pos[i, 0] = a.x; pos[i, 1] = a.y; pos[i, 2] = a.z
+
+    # Build evenly spaced grid axes spanning the atom positions
+    axes = []
+    for d in range(dims):
+        vmin = float(np.min(pos[:, d]))
+        vmax = float(np.max(pos[:, d]))
+        n = final_dim[d]
+        if n <= 0:
+            raise ValueError("final_dim entries must be positive integers")
+        if n == 1:
+            axes.append(np.array([(vmin + vmax) * 0.5], dtype=float))
+        else:
+            axes.append(np.linspace(vmin, vmax, n, dtype=float))
+
+    # Heuristic Gaussian sigma (isotropic) from median nearest-neighbor spacing in the used subspace
+    # Prefer SciPy cKDTree if available; else fall back to grid-based spacing
+    try:
+        from scipy.spatial import cKDTree  # type: ignore
+        tree = cKDTree(pos)
+        # k=2 because the closest point to a point is itself (distance 0) at k=1
+        dists, _ = tree.query(pos, k=2)
+        nn = dists[:, 1]
+        med_nn = float(np.median(nn[nn > 0])) if np.any(nn > 0) else 0.0
+        sigma = med_nn / 2.0 if med_nn > 0 else 0.0
+    except Exception:
+        # Fallback: use average grid spacing magnitude across axes
+        spacings = []
+        for ax in axes:
+            if ax.size > 1:
+                spacings.append((ax[-1] - ax[0]) / (ax.size - 1))
+        sigma = float(np.mean(spacings)) if spacings else 0.0
+
+    # If sigma is degenerate (e.g., single atom), set sigma to one grid step to avoid singularities
+    if not np.isfinite(sigma) or sigma <= 0:
+        # robust default: average grid spacing or small epsilon
+        spacings = []
+        for ax in axes:
+            if ax.size > 1:
+                spacings.append((ax[-1] - ax[0]) / (ax.size - 1))
+        sigma = float(np.mean(spacings)) if spacings else 1e-12
+
+    cutoff = 3.5  # truncate Gaussian at ~3.5 sigma (~0.00087 tail mass)
+    inv_two_sigma2 = 1.0 / (2.0 * sigma * sigma)
+
+    # Output grid
+    out = np.zeros(final_dim, dtype=values.dtype)
+
+    # Utility to find index window [i0, i1) within cutoff for coordinate p along axis ax
+    def window(ax: np.ndarray, p: float, rad: float):
+        # searchsorted gives insertion positions; we expand by +/- rad
+        left = p - rad
+        right = p + rad
+        i0 = int(np.searchsorted(ax, left, side='left'))
+        i1 = int(np.searchsorted(ax, right, side='right'))
+        if i0 < 0:
+            i0 = 0
+        if i1 > ax.size:
+            i1 = ax.size
+        return i0, i1
+
+    # Accumulate contributions per atom using separable Gaussian weights
+    rad = cutoff * sigma
+
+    if dims == 1:
+        ax = axes[0]
+        for (x,), v in zip(pos, values):
+            i0, i1 = window(ax, x, rad)
+            if i0 >= i1:
+                continue
+            dx = ax[i0:i1] - x
+            w = np.exp(-dx * dx * inv_two_sigma2)
+            sw = w.sum()
+            if sw > 0:
+                out[i0:i1] += v * (w / sw)
+    elif dims == 2:
+        ax, ay = axes
+        for (x, y), v in zip(pos, values):
+            ix0, ix1 = window(ax, x, rad)
+            iy0, iy1 = window(ay, y, rad)
+            if ix0 >= ix1 or iy0 >= iy1:
+                continue
+            dx = ax[ix0:ix1] - x
+            dy = ay[iy0:iy1] - y
+            wx = np.exp(-dx * dx * inv_two_sigma2)
+            wy = np.exp(-dy * dy * inv_two_sigma2)
+            # separable 2D Gaussian weights via outer product
+            w = np.multiply.outer(wy, wx)
+            sw = w.sum()
+            if sw > 0:
+                out[ix0:ix1, iy0:iy1] += (v * w / sw).T  # transpose to match (x,y) indexing
+    else:  # dims == 3
+        ax, ay, az = axes
+        for (x, y, z), v in zip(pos, values):
+            ix0, ix1 = window(ax, x, rad)
+            iy0, iy1 = window(ay, y, rad)
+            iz0, iz1 = window(az, z, rad)
+            if ix0 >= ix1 or iy0 >= iy1 or iz0 >= iz1:
+                continue
+            dx = ax[ix0:ix1] - x
+            dy = ay[iy0:iy1] - y
+            dz = az[iz0:iz1] - z
+            wx = np.exp(-dx * dx * inv_two_sigma2)
+            wy = np.exp(-dy * dy * inv_two_sigma2)
+            wz = np.exp(-dz * dz * inv_two_sigma2)
+            # separable 3D Gaussian weights via tensor outer product
+            # w[z,y,x] = wz[:,None,None] * wy[None,:,None] * wx[None,None,:]
+            w = np.multiply.outer(wz, np.multiply.outer(wy, wx))
+            sw = w.sum()
+            if sw > 0:
+                # out indexed as [Nx, Ny, Nz]; map local block accordingly
+                out[ix0:ix1, iy0:iy1, iz0:iz1] += (v * w / sw).transpose(2, 1, 0)
+
+    return out
