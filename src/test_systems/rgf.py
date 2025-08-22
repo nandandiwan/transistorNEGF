@@ -24,7 +24,7 @@ from scipy.interpolate import PchipInterpolator
 from numpy.fft import rfft, irfft
 from hamiltonian import Hamiltonian
 from lead_self_energy import LeadSelfEnergy
-from utils import smart_inverse, sparse_diag_product, chandrupatla
+from utils import smart_inverse, sparse_diag_product, chandrupatla, gaussian_broadening_interpolation
 
 
 
@@ -61,7 +61,19 @@ class GreensFunction:
         
         # cache for LDOS
         self.LDOS_cache = {}
+        # Control flag to force serial execution of get_n (used during coupled Poisson iterations)
+        self.force_serial = False
 
+    # --- Context manager to temporarily force serial get_n (no multiprocessing Pool) ---
+    from contextlib import contextmanager
+    @contextmanager
+    def serial_mode(self):
+        old = self.force_serial
+        self.force_serial = True
+        try:
+            yield
+        finally:
+            self.force_serial = old
     # --- LDOS cache helpers ---
     def _ldos_cache_key(self, E, ky):
         # Round to avoid floating key mismatches
@@ -611,6 +623,7 @@ class GreensFunction:
             total_density = np.sum(results, axis=0)
             if len(self.k_space) > 0:
                 total_density /= len(self.k_space)
+
             return total_density.real
 
         if method != "ldos_fermi":
@@ -677,15 +690,53 @@ class GreensFunction:
             E, ky=ky, use_rgf=use_rgf, self_energy_method=self_energy_method, compute_lesser=True
         )
         G_n_diag = -1j * G_lesser_diag
+    
         return self.dE * G_n_diag * 1 / (2 * np.pi)
 
-    def diff_rho_poisson(self, Efn=None, V=None, Ec=None, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio", method='gauss_fermi', processes=32):
+    def diff_rho_poisson(self, Efn=None, V=None, Ec=None, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio", method='gauss_fermi', processes=32,
+                         map_to_grid: bool = False, final_dim: tuple | None = None):
         """This finds the gradient of charge density wrt potential, note that all inputs are arrays here
         Supports 'uniform' (legacy) and 'gauss_fermi' (faster) integration methods.
+        Ec can be a scalar or an array of length equal to number of sites (spatially varying band edge).
+        Extended: Ec may also be k-dependent by passing a dict or tuple (Ec_site, Ec_k) where
+        Ec_k is shape (n_k,) or (n_k, n_sites). If k-dependent Ec is supplied we use per-k
+        lower bounds for Gauss-Fermi; per-site adaptive only when method=='adaptive_site'.
         """
         self.V = np.atleast_1d(V)
         self.Efn = np.atleast_1d(Efn)
         self.boltzmann = boltzmann
+        # Normalize Ec to array matching V length
+        Ec_k = None
+        if isinstance(Ec, (tuple, list)) and len(Ec) == 2:
+            Ec, Ec_k = Ec  # unpack (Ec_site, Ec_k)
+        if Ec is None:
+            Ec_array = np.full_like(self.V, float(self.energy_grid[0]))
+        else:
+            Ec_arr = np.atleast_1d(Ec)
+            if Ec_arr.size == 1:
+                Ec_array = np.full_like(self.V, Ec_arr[0])
+            else:
+                if Ec_arr.shape[0] != self.V.shape[0]:
+                    raise ValueError("Ec array must have same length as V")
+                Ec_array = Ec_arr
+        # Process k-dependent Ec if provided
+        self._Ec_k_min = None
+        if Ec_k is not None:
+            Ec_k_arr = np.atleast_1d(Ec_k)
+            n_k = len(self.k_space)
+            if Ec_k_arr.ndim == 1:
+                if Ec_k_arr.shape[0] != n_k:
+                    raise ValueError("Ec_k length must match number of k-points")
+                self._Ec_k_min = Ec_k_arr.astype(float)
+            elif Ec_k_arr.ndim == 2:
+                if Ec_k_arr.shape[0] != n_k or Ec_k_arr.shape[1] != self.V.shape[0]:
+                    raise ValueError("Ec_k 2D shape must be (n_k, n_sites)")
+                self._Ec_k_min = Ec_k_arr.min(axis=1)
+            else:
+                raise ValueError("Ec_k must be 1D (n_k) or 2D (n_k, n_sites)")
+        self.Ec_array = Ec_array
+        Ec_min = float(np.min(Ec_array))
+        Ec_max = float(np.max(Ec_array))
         
         ky_list = self.k_space
 
@@ -693,20 +744,57 @@ class GreensFunction:
         _mgr = self._ensure_shared_cache(processes)
         try:
             if method == 'uniform':
-                E_max = Ec + 10 * self.ham.kbT_eV 
-                E_list, dE = np.linspace(Ec, E_max, num_points, retstep=True)
+                # Integrate from global min(Ec) to max(Ec)+margin so all sites covered
+                E_list, dE = np.linspace(Ec_min, Ec_max + 10 * self.ham.kbT_eV, num_points, retstep=True)
                 param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf], [dE]))
                 with multiprocessing.Pool(processes=processes) as pool:
                     results = pool.map(self._diff_rho_poisson_worker, param_grid)
-            else:  # gauss_fermi
+            elif method == 'gauss_fermi':  # gauss_fermi
                 # store params needed by the worker
                 self._diff_params = {
-                    'Ef': Ec,
+                    'Ec_min': Ec_min,
+                    'Ec_max': Ec_max,
                     'use_rgf': use_rgf,
                     'self_energy_method': self_energy_method
                 }
                 with multiprocessing.Pool(processes=processes) as pool:
                     results = pool.map(self._diff_rho_gauss_fermi_worker, ky_list)
+            elif method == 'adaptive_site':
+                # Per-site adaptive integration (only if truly needed)
+                results = []
+                kT = self.ham.kbT_eV
+                Ec_global_min = Ec_min
+                Ec_global_max = Ec_max
+                # define integration energy window per site
+                def site_integrand(E, site_idx, ky):
+                    # LDOS cached per energy, ky (full vector); pick site component
+                    ldos_vec = self._get_ldos_cached(E, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
+                    exp_arg = (E - self.V[site_idx] - self.Efn[site_idx]) / kT
+                    exp_arg = np.clip(exp_arg, -700, 700)
+                    if self.boltzmann:
+                        if method == 'uniform':
+                            raise RuntimeError("Invalid state")
+                        fder = np.exp(exp_arg)  # derivative of exp(-exp_arg)? (not used)
+                    expx = np.exp(exp_arg)
+                    fermi_derivative = expx / (1.0 + expx)**2 if -35 < exp_arg < 35 else 0.0
+                    return ldos_vec[site_idx] * fermi_derivative / kT
+                n_sites = self.V.shape[0]
+                ky_norm = max(1, len(ky_list))
+                for ky in ky_list:
+                    site_vals = np.zeros(n_sites)
+                    for i_site in range(n_sites):
+                        a = self.Ec_array[i_site]  # site-specific lower bound
+                        b = self.Ec_array[i_site] + 10 * kT
+                        val, _ = quad_vec(lambda E: site_integrand(E, i_site, ky), a, b, epsrel=1e-5, epsabs=1e-10)
+                        site_vals[i_site] = val
+                    results.append(site_vals)
+                # average over k
+                if results:
+                    results = [r for r in results]
+                else:
+                    results = []
+            else:
+                raise ValueError(f"Unknown method '{method}' for diff_rho_poisson")
         finally:
             self._finalize_shared_cache(_mgr)
 
@@ -718,7 +806,26 @@ class GreensFunction:
         diff_rho = np.sum(results, axis=0)
         if ky_list.size > 0:
             diff_rho /= ky_list.size
-        return diff_rho.real
+        diff_rho = diff_rho.real
+        if map_to_grid:
+            if final_dim is None:
+                raise ValueError("final_dim must be provided when map_to_grid=True")
+            # Attempt to fetch atom positions list
+            atom_pos = None
+            if getattr(self.ham, 'unit_cell', None) is not None:
+                uc = self.ham.unit_cell
+                # Accept attributes 'structure' or 'ATOM_POSITIONS'
+                if hasattr(uc, 'structure'):
+                    atom_pos = getattr(uc, 'structure')
+                elif hasattr(uc, 'ATOM_POSITIONS'):
+                    atom_pos = getattr(uc, 'ATOM_POSITIONS')
+            if atom_pos is None:
+                raise ValueError("Could not obtain atom positions from unit cell for broadening mapping")
+            if len(final_dim) == 1:
+                # 1D path: bypass broadening (identity)
+                return diff_rho
+            diff_rho = gaussian_broadening_interpolation(atom_pos, diff_rho, final_dim)
+        return diff_rho
 
     def _diff_rho_poisson_worker(self, param):
         E, ky, self_energy_method, use_rgf, dE = param 
@@ -742,10 +849,19 @@ class GreensFunction:
         """Gauss-Fermi quadrature for d rho / d V at a single k-point."""
         kT = self.ham.kbT_eV
         n_sites = self.ham.get_num_sites()
-        Ef = self._diff_params['Ef']
+        # If k-dependent Ec provided use its value, else global Ec_min
+        if getattr(self, '_Ec_k_min', None) is not None:
+            # map ky to index
+            try:
+                k_index = np.where(self.k_space == ky)[0][0]
+            except Exception:
+                k_index = 0
+            Ec_min = float(self._Ec_k_min[k_index])
+        else:
+            Ec_min = self._diff_params['Ec_min']
 
         mu_avg = np.mean(self.V + self.Efn)
-        x_min = (Ef - mu_avg) / kT
+        x_min = (Ec_min - mu_avg) / kT
         x_max = 20.0
 
         n_quad = 32
@@ -773,7 +889,8 @@ class GreensFunction:
 
 
     def get_n(self, V, Efn, Ec, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio", 
-              method='gauss_fermi', rtol=1e-6, atol=1e-12, processes=32):
+              method='gauss_fermi', rtol=1e-6, atol=1e-12, processes=32,
+              map_to_grid: bool = False, final_dim: tuple | None = None):
         """
         Compute carrier density with improved parallel and vectorized integration methods.
         
@@ -781,11 +898,36 @@ class GreensFunction:
         -----------
         processes : int
             Number of parallel processes to use for k-point calculations.
+        Ec : scalar or array (length = number of sites) conduction band edge.
+        Extended: Ec may be (Ec_site, Ec_k) with Ec_k shape (n_k,) or (n_k, n_sites). Methods:
+          - 'gauss_fermi' uses k-specific lower bounds if Ec_k given.
+          - 'adaptive_site' (new) performs per-site adaptive integration; heavier, only use when required.
     
         """
-        self.V = np.atleast_1d(V)
-        self.Efn = np.atleast_1d(Efn)
+        n_sites = self.ham.get_num_sites()
+        # Respect forced-serial mode
+        if getattr(self, 'force_serial', False):
+            processes = 1
+        def _norm(arr, name, fill=0.0):
+            a = np.atleast_1d(arr).astype(float)
+            if a.size == n_sites:
+                return a
+            if a.size > n_sites:
+                warnings.warn(f"{name} length {a.size} > n_sites {n_sites}; truncating.")
+                return a[:n_sites]
+            pad_val = a[-1] if a.size else fill
+            warnings.warn(f"{name} length {a.size} < n_sites {n_sites}; padding with {pad_val}.")
+            return np.pad(a, (0, n_sites - a.size), constant_values=pad_val)
+
+        self.V = _norm(V, "V")
+        self.Efn = _norm(Efn, "Efn")
+        Ec_arr = _norm(Ec, "Ec", fill=float(np.atleast_1d(Ec).flat[0]))
+        self.Ec_array = Ec_arr
         self.boltzmann = boltzmann
+        Ec_min = float(np.min(Ec_arr))
+        Ec_max = float(np.max(Ec_arr))
+        # Sanity assertion post-normalization
+        assert self.V.size == self.Efn.size == self.Ec_array.size == n_sites, "Post-normalization size mismatch"
 
         # Store parameters that workers will need, avoiding passing them repeatedly.
         self._worker_params = {
@@ -808,12 +950,40 @@ class GreensFunction:
                 if method == 'adaptive':
                     results = pool.map(self._adaptive_worker, self.k_space)
                 elif method == 'gauss_fermi':
-                    self._worker_params['Ec'] = Ec
+                    # Provide global min Ec if no k dependence; k-dependent handled in worker via _Ec_k_min
+                    self._worker_params['Ec'] = Ec_min
                     results = pool.map(self._gauss_fermi_worker, self.k_space)
+                elif method == 'adaptive_site':
+                    # Per-site adaptive integration
+                    results = []
+                    kT = self.ham.kbT_eV
+                    n_sites = self.V.shape[0]
+                    for ky in self.k_space:
+                        # site-wise integration
+                        densities_site = np.zeros(n_sites)
+                        for i_site in range(n_sites):
+                            a = self.Ec_array[i_site]
+                            b = a + 10 * kT
+                            def integrand(E):
+                                ldos_vec = self._get_ldos_cached(E, ky, self_energy_method=self._worker_params['self_energy_method'], use_rgf=self._worker_params['use_rgf'])
+                                exp_arg = (E - self.V[i_site] - self.Efn[i_site]) / kT
+                                exp_arg = np.clip(exp_arg, -700, 700)
+                                if self.boltzmann:
+                                    fermi_val = np.exp(-exp_arg)
+                                else:
+                                    if exp_arg > 35:
+                                        fermi_val = 0.0
+                                    elif exp_arg < -35:
+                                        fermi_val = 1.0
+                                    else:
+                                        fermi_val = 1.0 / (1.0 + np.exp(exp_arg))
+                                return ldos_vec[i_site] * fermi_val
+                            val, _ = quad_vec(integrand, a, b, epsrel=1e-6, epsabs=1e-12)
+                            densities_site[i_site] = val
+                        results.append(densities_site)
                 else: # uniform
                     # Create the parameter grid for the uniform method
-                    E_max = Ec + 10 
-                    E_list = np.linspace(Ec, E_max, num_points)
+                    E_list = np.linspace(Ec_min, Ec_max + 10, num_points)
                     if num_points > 1:
                         dE = E_list[1] - E_list[0]
                     else:
@@ -834,11 +1004,29 @@ class GreensFunction:
             total_density = np.sum(results, axis=0)
             if len(self.k_space) > 0:
                 total_density /= len(self.k_space)
+        elif method == 'adaptive_site':
+            total_density = np.mean(results, axis=0)
         else:
             # For adaptive/gauss, results are integrated densities per k-point
             total_density = np.mean(results, axis=0)
 
-        return total_density.real
+        total_density = total_density.real
+        if map_to_grid:
+            if final_dim is None:
+                raise ValueError("final_dim must be provided when map_to_grid=True")
+            atom_pos = None
+            if getattr(self.ham, 'unit_cell', None) is not None:
+                uc = self.ham.unit_cell
+                if hasattr(uc, 'structure'):
+                    atom_pos = getattr(uc, 'structure')
+                elif hasattr(uc, 'ATOM_POSITIONS'):
+                    atom_pos = getattr(uc, 'ATOM_POSITIONS')
+            if atom_pos is None:
+                raise ValueError("Could not obtain atom positions from unit cell for broadening mapping")
+            if len(final_dim) == 1:
+                return total_density
+            total_density = gaussian_broadening_interpolation(atom_pos, total_density, final_dim)
+        return total_density
 
     # --- Worker for Adaptive Integration ---
     def _adaptive_worker(self, ky):
@@ -879,27 +1067,25 @@ class GreensFunction:
         """Worker function for Gauss-Fermi integration for a single k-point."""
         kT = self.ham.kbT_eV
         n_sites = self.ham.get_num_sites()
-        Ec = self._worker_params['Ec']
-        
+        Ec_min = self._worker_params['Ec']
+
         mu_avg = np.mean(self.V + self.Efn)
-        x_min = (Ec - mu_avg) / kT
+        x_min = (Ec_min - mu_avg) / kT
         x_max = 20.0
-        
+
         n_quad = 32
         x_points, weights = np.polynomial.legendre.leggauss(n_quad)
         x_scaled = 0.5 * (x_max - x_min) * x_points + 0.5 * (x_max + x_min)
         weights_scaled = weights * 0.5 * (x_max - x_min)
-        
+
         ky_density = np.zeros(n_sites)
         for x, w in zip(x_scaled, weights_scaled):
             E_ref = mu_avg + x * kT
-            # Use LDOS cache with current solver settings
             ldos_vector = self._get_ldos_cached(
                 E_ref, ky,
                 self_energy_method=self._worker_params['self_energy_method'],
                 use_rgf=self._worker_params['use_rgf']
             )
-            
             exp_arg = (E_ref - self.V - self.Efn) / kT
             exp_arg_clipped = np.clip(exp_arg, -700, 700)
             if self.boltzmann:
@@ -908,9 +1094,7 @@ class GreensFunction:
                 fermi_vector = np.where(exp_arg_clipped > 35, 0.0,
                                         np.where(exp_arg_clipped < -35, 1.0,
                                                  1.0 / (1.0 + np.exp(exp_arg_clipped))))
-            
             ky_density += w * ldos_vector * fermi_vector * kT
-            
         return ky_density
 
     # --- Worker for Uniform Grid Integration ---
@@ -947,6 +1131,13 @@ class GreensFunction:
         else:
             diag_G_R = G_R
         ldos_vector = -1.0 / np.pi * np.imag(diag_G_R)
+        # Enforce size: trim or pad to n_sites
+        n_sites = self.ham.get_num_sites()
+        if ldos_vector.size != n_sites:
+            if ldos_vector.size > n_sites:
+                ldos_vector = ldos_vector[:n_sites]
+            else:
+                ldos_vector = np.pad(ldos_vector, (0, n_sites - ldos_vector.size), constant_values=0.0)
         
         # Store in cache
         try:
@@ -955,6 +1146,10 @@ class GreensFunction:
             # If cache not shareable or some multiprocessing error, just skip caching
             pass
         return ldos_vector
+
+    # Backwards compatibility alias expected by some callers
+    def get_diff_rho(self, Efn=None, V=None, Ec=None, num_points=51, boltzmann=False, use_rgf=True, self_energy_method="sancho_rubio", method='gauss_fermi', processes=32):
+        return self.diff_rho_poisson(Efn=Efn, V=V, Ec=Ec, num_points=num_points, boltzmann=boltzmann, use_rgf=use_rgf, self_energy_method=self_energy_method, method=method, processes=processes)
 
     # Public alias (for external callers expecting this name)
     def get_ldos_cache(self, E, ky, self_energy_method=None, use_rgf=True):
@@ -1041,19 +1236,33 @@ class GreensFunction:
     def identify_EC(self):
         raise NotImplemented("needs to use the DOS")
 
-    def fermi_energy(self, V :np.ndarray, lower_bound = None, upper_bound = None):
-        """Uses chandrupatla algorithm"""
-        
-        # come up with better estimate
-        if (type(lower_bound) != np.ndarray):
-            lower_bound = np.ones_like(V) * -1
-        if (type(upper_bound) != np.ndarray):
-            upper_bound = np.ones_like(V) * 2
-        
-        n_negf = self.compute_charge_density()
-        def func(x):
-            # x is the trial quasi-Fermi level Efn array; V is the potential
-            return self.get_n(V=V, Efn=x, Ec=self.Ec) - n_negf
-        
-        return chandrupatla(func, lower_bound, upper_bound, verbose=False)
+    def fermi_energy(self, V: np.ndarray, lower_bound=None, upper_bound=None, Ec=None, method='gauss_fermi', use_rgf=True,
+                     map_to_grid=False, final_dim=None, return_broadened=False):
+        if Ec is None:
+            Ec = getattr(self, 'Ec', None)
+        if not isinstance(lower_bound, np.ndarray):
+            lower_bound = np.full_like(V, -1.0)
+        if not isinstance(upper_bound, np.ndarray):
+            upper_bound = np.full_like(V, 2.0)
+        n_ref = self.compute_charge_density(use_rgf=use_rgf)
+        def func(Efn_trial):
+            n_trial = self.get_n(V=V, Efn=Efn_trial, Ec=Ec, method=method, use_rgf=use_rgf, map_to_grid=False)
+            return n_trial - n_ref
+        Efn_sol = chandrupatla(func, lower_bound, upper_bound, verbose=False)
+        if map_to_grid:
+            if final_dim is None:
+                raise ValueError("final_dim must be provided when map_to_grid=True")
+            atom_pos = None
+            if getattr(self.ham, 'unit_cell', None) is not None:
+                uc = self.ham.unit_cell
+                if hasattr(uc, 'structure'):
+                    atom_pos = getattr(uc, 'structure')
+                elif hasattr(uc, 'ATOM_POSITIONS'):
+                    atom_pos = getattr(uc, 'ATOM_POSITIONS')
+            if atom_pos is None:
+                raise ValueError("Could not obtain atom positions from unit cell for broadening mapping")
+            if len(final_dim) == 1:
+                return Efn_sol
+            Efn_sol = gaussian_broadening_interpolation(atom_pos, Efn_sol, final_dim)
+        return Efn_sol
             
