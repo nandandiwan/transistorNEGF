@@ -61,7 +61,16 @@ class GreensFunction:
         
         # cache for LDOS
         self.LDOS_cache = {}
-
+        self.force_serial = False
+    from contextlib import contextmanager
+    @contextmanager
+    def serial_mode(self):
+        old = self.force_serial
+        self.force_serial = True
+        try:
+            yield
+        finally:
+            self.force_serial = old
     # --- LDOS cache helpers ---
     def _ldos_cache_key(self, E, ky):
         # Round to avoid floating key mismatches
@@ -598,6 +607,8 @@ class GreensFunction:
                                 tail_points=32, processes=32):
         """Compute electron number per site (one spin) with multiple integration backends.
         """
+        if getattr(self, 'force_serial', False):
+            processes = 1
         if method == "lesser":
             E_list = self.energy_grid
             ky_list = self.k_space
@@ -683,6 +694,8 @@ class GreensFunction:
         """This finds the gradient of charge density wrt potential, note that all inputs are arrays here
         Supports 'uniform' (legacy) and 'gauss_fermi' (faster) integration methods.
         """
+        if getattr(self, 'force_serial', False):
+            processes = 1
         self.V = np.atleast_1d(V)
         self.Efn = np.atleast_1d(Efn)
         self.boltzmann = boltzmann
@@ -746,7 +759,7 @@ class GreensFunction:
 
         mu_avg = np.mean(self.V + self.Efn)
         x_min = (Ef - mu_avg) / kT
-        x_max = 20.0
+        x_max = 10
 
         n_quad = 32
         x_points, weights = np.polynomial.legendre.leggauss(n_quad)
@@ -783,6 +796,8 @@ class GreensFunction:
             Number of parallel processes to use for k-point calculations.
     
         """
+        if getattr(self, 'force_serial', False):
+            processes = 1
         self.V = np.atleast_1d(V)
         self.Efn = np.atleast_1d(Efn)
         self.boltzmann = boltzmann
@@ -799,7 +814,7 @@ class GreensFunction:
             # Fallback to serial execution if only one k-point or one process
             if processes <= 1:
                 print("Running in serial mode (1 k-point or 1 process).")
-                pool = multiprocessing.pool.ThreadPool(1)
+                pool = multiprocessing.Pool(processes=1)
             else:
                 print(f"Running in parallel mode with {processes} processes.")
                 pool = multiprocessing.Pool(processes=processes)
@@ -880,10 +895,12 @@ class GreensFunction:
         kT = self.ham.kbT_eV
         n_sites = self.ham.get_num_sites()
         Ec = self._worker_params['Ec']
-        
-        mu_avg = np.mean(self.V + self.Efn)
+        try:
+            mu_avg = np.mean(self.V + self.Efn)
+        except:
+            print(self.Efn, self.V)
         x_min = (Ec - mu_avg) / kT
-        x_max = 20.0
+        x_max = 10.0
         
         n_quad = 32
         x_points, weights = np.polynomial.legendre.leggauss(n_quad)
@@ -1041,19 +1058,34 @@ class GreensFunction:
     def identify_EC(self):
         raise NotImplemented("needs to use the DOS")
 
-    def fermi_energy(self, V :np.ndarray, lower_bound = None, upper_bound = None):
-        """Uses chandrupatla algorithm"""
-        
-        # come up with better estimate
-        if (type(lower_bound) != np.ndarray):
-            lower_bound = np.ones_like(V) * -1
-        if (type(upper_bound) != np.ndarray):
-            upper_bound = np.ones_like(V) * 2
-        
-        n_negf = self.compute_charge_density()
-        def func(x):
-            # x is the trial quasi-Fermi level Efn array; V is the potential
-            return self.get_n(V=V, Efn=x, Ec=self.Ec) - n_negf
-        
-        return chandrupatla(func, lower_bound, upper_bound, verbose=False)
+    def fermi_energy(self, V: np.ndarray, lower_bound=None, upper_bound=None, Ec=0, verbose=False,
+                     mode='inconsistent', f_tol=None, get_n_kwargs=None, allow_unbracketed=True):
+        """Solve per-site quasi-Fermi level using Chandrupatla.
+
+        mode: 'inconsistent' (legacy) uses full lesser density vs conduction-only get_n.
+              'consistent' computes target density with get_n at midpoint so both sides match method.
+        f_tol: residual tolerance on |get_n - target| for acceptance; larger residuals -> NaN.
+        get_n_kwargs: dict passed to get_n (e.g. {'method':'gauss_fermi'}).
+        """
+        V = np.atleast_1d(V).astype(float)
+        if not isinstance(lower_bound, np.ndarray):
+            lower_bound = np.full_like(V, -1.0, dtype=float)
+        if not isinstance(upper_bound, np.ndarray):
+            upper_bound = np.full_like(V, 2.0, dtype=float)
+        if get_n_kwargs is None:
+            get_n_kwargs = {}
+
+        if mode == 'consistent':
+            mid = 0.5 * (lower_bound + upper_bound)
+            target_density = self.get_n(V=V, Efn=mid, Ec=Ec, **get_n_kwargs)
+            def func(x):
+                return self.get_n(V=V, Efn=x, Ec=Ec, **get_n_kwargs) - target_density
+        else:
+            target_density = self.compute_charge_density()
+            def func(x):
+                return self.get_n(V=V, Efn=x, Ec=Ec, **get_n_kwargs) - target_density
+
+        roots = chandrupatla(func, lower_bound, upper_bound, verbose=verbose,
+                              allow_unbracketed=allow_unbracketed, f_tol=f_tol)
+        return roots
             

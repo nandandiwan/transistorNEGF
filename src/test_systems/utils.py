@@ -98,7 +98,10 @@ def sparse_diag_product(A, B):
 def chandrupatla(f, x0, x1, verbose=False,
                  eps_m=None, eps_a=None,
                  rtol=1e-5, atol=0.0,
-                 maxiter=50, return_iter=False, args=()):
+                 maxiter=50, return_iter=False, args=(),
+                 allow_unbracketed=True,
+                 f_tol=None,
+                 stagnation_iters=5):
     """Vectorized Chandrupatla root-finding method.
 
     Parameters
@@ -171,14 +174,55 @@ def chandrupatla(f, x0, x1, verbose=False,
     a = a0.copy()
     b = b0.copy()
 
-    # Check for valid brackets: allow equality (root at endpoint)
-    if not np.all(np.sign(fa) * np.sign(fb) <= 0):
-        bad = np.where(np.sign(fa) * np.sign(fb) > 0)
-        if verbose:
-            print(f"Bracket check failed at indices {bad}")
-        #raise ValueError(f"Chandrupatla: supplied bounds do not bracket a root at indices {bad}")
-        print("doubling range")
-        chandrupatla(f, 3 * x0, 3*x1, args=args)
+    # Bracket validation & controlled expansion (iterative, non-recursive)
+    prod = np.sign(fa) * np.sign(fb)
+    if not np.all(prod <= 0):
+        # We will iteratively expand only those intervals that fail to bracket
+        max_expansions = 12  # avoid runaway interval growth
+        expansion_factor = 2.0  # multiplies half-width each expansion
+        a_exp = a0.copy(); b_exp = b0.copy(); fa_exp = fa.copy(); fb_exp = fb.copy()
+        for k in range(max_expansions):
+            mask = (np.sign(fa_exp) * np.sign(fb_exp) > 0)
+            if not np.any(mask):
+                break
+            if verbose:
+                idx_list = np.where(mask)[0] if mask.ndim else 'scalar'
+                msg = f"Bracket expansion iteration {k+1}: expanding {np.count_nonzero(mask)} interval(s) (indices {idx_list})"
+                if verbose is True:
+                    print(msg)
+                else:
+                    try:
+                        print(msg, file=verbose)
+                    except Exception:
+                        print(msg)
+            # Current centers & half-widths for masked indices only
+            centers = 0.5 * (a_exp[mask] + b_exp[mask])
+            half_widths = 0.5 * (b_exp[mask] - a_exp[mask]) * expansion_factor
+            half_widths = np.where(half_widths == 0, 1.0, half_widths)
+            a_exp[mask] = centers - half_widths
+            b_exp[mask] = centers + half_widths
+            # Recompute f over full arrays to preserve full-length outputs
+            fa_exp = f(a_exp, *args)
+            fb_exp = f(b_exp, *args)
+        # Final check
+        still_bad_mask = (np.sign(fa_exp) * np.sign(fb_exp) > 0)
+        if np.any(still_bad_mask):
+            if allow_unbracketed:
+                import warnings as _warnings
+                _warnings.warn(f"Chandrupatla: proceeding without valid bracket for {np.count_nonzero(still_bad_mask)} index/indices; result may be approximate. Use tighter initial bounds or inspect function.")
+                # Heuristic: replace one endpoint with midpoint to create artificial zero-width bracket
+                mid = 0.5 * (a_exp[still_bad_mask] + b_exp[still_bad_mask])
+                a_exp[still_bad_mask] = mid
+                b_exp[still_bad_mask] = mid
+                # Re-evaluate entire arrays to keep consistent shape
+                fa_exp = f(a_exp, *args)
+                fb_exp = f(b_exp, *args)
+            else:
+                bad = np.where(still_bad_mask)
+                raise ValueError(f"Chandrupatla: failed to bracket roots after {max_expansions} expansions at indices {bad}")
+        # Use expanded brackets
+        a0, b0, fa, fb = a_exp, b_exp, fa_exp, fb_exp
+        a = a0.copy(); b = b0.copy()
 
     c = a.copy()
     fc = fa.copy()
@@ -204,7 +248,9 @@ def chandrupatla(f, x0, x1, verbose=False,
     terminate = np.zeros(shape, dtype=bool) if shape else False
     iterations = np.zeros(shape, dtype=int) if shape else 0
 
-    for _ in range(maxiter):
+    last_fm = None
+    stagnation_count = 0
+    for iter_idx in range(maxiter):
         # Candidate new point
         xt = a + t * (b - a)
         ft = f(xt, *args)
@@ -261,7 +307,13 @@ def chandrupatla(f, x0, x1, verbose=False,
         denom = np.abs(b - c)
         denom = np.where(denom == 0, 1.0, denom)  # avoid divide by zero
         tlim = tol / denom
-        new_terminate = (fm == 0) | (tlim > 0.5) | terminate
+        # Residual-based early termination
+        if f_tol is not None:
+            small_res = np.abs(fm) <= f_tol
+        else:
+            small_res = (fm == 0)
+
+        new_terminate = small_res | (tlim > 0.5) | terminate
         if shape:
             iterations[~new_terminate] += 1
         else:
@@ -270,6 +322,24 @@ def chandrupatla(f, x0, x1, verbose=False,
         terminate = new_terminate
         if np.all(terminate):
             break
+
+        # Stagnation detection on fm magnitude (only where not yet terminated)
+        if f_tol is not None:
+            active = ~terminate
+            if np.any(active):
+                cur_fm_norm = np.max(np.abs(fm[active])) if np.ndim(fm) else abs(fm)
+                if last_fm is not None and cur_fm_norm >= last_fm * 0.999:
+                    stagnation_count += 1
+                else:
+                    stagnation_count = 0
+                last_fm = cur_fm_norm
+                if stagnation_count >= stagnation_iters:
+                    # give up on active indices: mark them for termination
+                    if shape:
+                        terminate[active] = True
+                    else:
+                        terminate = True
+                    break
 
         # Compute xi, phi
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -309,6 +379,17 @@ def chandrupatla(f, x0, x1, verbose=False,
     if scalar_output:
         roots = np.asarray(roots).item()
         iterations = int(iterations)
+    if f_tol is not None:
+        # Final residual screening
+        fres = f(roots, *args)
+        if shape:
+            bad = np.where(np.abs(fres) > f_tol)
+            if bad[0].size:
+                roots = np.array(roots, copy=True)
+                roots[bad] = np.nan
+        else:
+            if abs(fres) > f_tol:
+                roots = np.nan
     if return_iter:
         return roots, iterations
     return roots
