@@ -101,8 +101,10 @@ def chandrupatla(f, x0, x1, verbose=False,
                  maxiter=50, return_iter=False, args=(),
                  allow_unbracketed=True,
                  f_tol=None,
-                 stagnation_iters=5):
-    """Vectorized Chandrupatla root-finding method.
+                 stagnation_iters=5,
+                 plateau_f_tol=None,
+                 plateau_span_shrink=True):
+    """Vectorized Chandrupatla root-finding method with optional plateau (flat residual) detection.
 
     Parameters
     ----------
@@ -129,6 +131,17 @@ def chandrupatla(f, x0, x1, verbose=False,
         If True also return per-root iteration counts.
     args : tuple, optional
         Extra arguments passed to f.
+
+    Parameters (additions)
+    ---------------------
+    plateau_f_tol : float, optional
+        If provided, treat intervals where BOTH |f(a)| and |f(b)| <= plateau_f_tol as already
+        converged even if they do not strictly bracket (same sign). The returned root for such
+        intervals is the midpoint. This is useful for flat plateaus (e.g. band gaps) where any
+        chemical potential inside is acceptable.
+    plateau_span_shrink : bool, default True
+        If True, when a plateau is detected the bracket is collapsed to its midpoint immediately
+        to avoid unnecessary iterations / expansions.
 
     Returns
     -------
@@ -174,6 +187,23 @@ def chandrupatla(f, x0, x1, verbose=False,
     a = a0.copy()
     b = b0.copy()
 
+    # Early plateau detection BEFORE bracket validation
+    plateau_mask = None
+    if plateau_f_tol is not None:
+        plateau_mask = (np.abs(fa) <= plateau_f_tol) & (np.abs(fb) <= plateau_f_tol)
+        if plateau_mask.any():
+            # Collapse those intervals to midpoint; this effectively "solves" them.
+            mid = 0.5 * (a0[plateau_mask] + b0[plateau_mask]) if plateau_mask.ndim else 0.5 * (a0 + b0)
+            if plateau_span_shrink:
+                a0 = a0.copy(); b0 = b0.copy()
+                if plateau_mask.ndim:
+                    a0[plateau_mask] = mid
+                    b0[plateau_mask] = mid
+                else:
+                    a0 = mid; b0 = mid
+                fa = f(a0, *args)
+                fb = f(b0, *args)
+
     # Bracket validation & controlled expansion (iterative, non-recursive)
     prod = np.sign(fa) * np.sign(fb)
     if not np.all(prod <= 0):
@@ -183,6 +213,12 @@ def chandrupatla(f, x0, x1, verbose=False,
         a_exp = a0.copy(); b_exp = b0.copy(); fa_exp = fa.copy(); fb_exp = fb.copy()
         for k in range(max_expansions):
             mask = (np.sign(fa_exp) * np.sign(fb_exp) > 0)
+            # Exclude plateau intervals (already acceptable) from expansion attempts
+            if plateau_f_tol is not None and plateau_mask is not None:
+                if plateau_mask.ndim:
+                    mask = mask & (~plateau_mask)
+                elif plateau_mask:  # scalar True
+                    mask = False
             if not np.any(mask):
                 break
             if verbose:
@@ -206,6 +242,12 @@ def chandrupatla(f, x0, x1, verbose=False,
             fb_exp = f(b_exp, *args)
         # Final check
         still_bad_mask = (np.sign(fa_exp) * np.sign(fb_exp) > 0)
+        if plateau_f_tol is not None and plateau_mask is not None:
+            # Keep plateau intervals out of the 'still bad' assessment
+            if plateau_mask.ndim:
+                still_bad_mask = still_bad_mask & (~plateau_mask)
+            else:
+                still_bad_mask = still_bad_mask and (not plateau_mask)
         if np.any(still_bad_mask):
             if allow_unbracketed:
                 import warnings as _warnings
@@ -313,7 +355,13 @@ def chandrupatla(f, x0, x1, verbose=False,
         else:
             small_res = (fm == 0)
 
-        new_terminate = small_res | (tlim > 0.5) | terminate
+        # Plateau condition during iterations (updated endpoints
+        if plateau_f_tol is not None:
+            # Bracket endpoints small => plateau
+            plateau_now = (np.abs(fa) <= plateau_f_tol) & (np.abs(fb) <= plateau_f_tol)
+            new_terminate = small_res | (tlim > 0.5) | plateau_now | terminate
+        else:
+            new_terminate = small_res | (tlim > 0.5) | terminate
         if shape:
             iterations[~new_terminate] += 1
         else:
