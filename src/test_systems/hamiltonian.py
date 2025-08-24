@@ -769,8 +769,8 @@ class Hamiltonian:
             return sp.csc_matrix(np.diag(x))
     
     def set_potential(self, pot):
-        if (self.name == "one_d_wire"):
-            self.potential = pot
+
+        self.potential = pot
 
     def _add_potential(self, hamiltonian, blocks: bool):
         if self.potential is None:

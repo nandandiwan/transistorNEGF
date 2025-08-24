@@ -364,7 +364,7 @@ class LeadSelfEnergy():
             n = H00.shape[0]
             eta = 1e-3
             G_surface = linalg.pinv(self._add_eta(E) * np.eye(n) - H00)
-
+    
         # Calculate self-energy
         if side == "left":
             self_energy = H10 @ G_surface @ H01

@@ -713,22 +713,28 @@ class GreensFunction:
         _mgr = self._ensure_shared_cache(processes)
         try:
             if method == 'uniform':
-                E_max = Ec + 10 * self.ham.kbT_eV 
+                E_max = Ec + 10 * self.ham.kbT_eV
                 E_list, dE = np.linspace(Ec, E_max, num_points, retstep=True)
                 param_grid = list(product(E_list, ky_list, [self_energy_method], [use_rgf], [dE]))
-                with multiprocessing.Pool(processes=processes) as pool:
-                    results = pool.map(self._diff_rho_poisson_worker, param_grid)
-            elif method == 'gauss_fermi':  # gauss_fermi
-                # store params needed by the worker
+                if processes <= 1 or len(ky_list) == 1:
+                    print("Running diff_rho_poisson (uniform) in serial mode.")
+                    results = [self._diff_rho_poisson_worker(p) for p in param_grid]
+                else:
+                    with multiprocessing.Pool(processes=processes) as pool:
+                        results = pool.map(self._diff_rho_poisson_worker, param_grid)
+            elif method == 'gauss_fermi':
                 self._diff_params = {
                     'Ef': Ec,
                     'use_rgf': use_rgf,
                     'self_energy_method': self_energy_method
                 }
-                with multiprocessing.Pool(processes=processes) as pool:
-                    results = pool.map(self._diff_rho_gauss_fermi_worker, ky_list)
+                if processes <= 1 or len(ky_list) == 1:
+                    print("Running diff_rho_poisson (gauss_fermi) in serial mode.")
+                    results = [self._diff_rho_gauss_fermi_worker(ky) for ky in ky_list]
+                else:
+                    with multiprocessing.Pool(processes=processes) as pool:
+                        results = pool.map(self._diff_rho_gauss_fermi_worker, ky_list)
             elif method == 'ozaki_cfr':
-                # store parameters for ozaki worker
                 if force_recompute_ozaki:
                     try:
                         get_ozaki_poles_residues.cache_clear()
@@ -743,8 +749,12 @@ class GreensFunction:
                     'Efn_vec': np.atleast_1d(Efn),
                     'boltzmann': boltzmann
                 }
-                with multiprocessing.Pool(processes=processes) as pool:
-                    results = pool.map(self._diff_rho_ozaki_worker, ky_list)
+                if processes <= 1 or len(ky_list) == 1:
+                    print("Running diff_rho_poisson (ozaki_cfr) in serial mode.")
+                    results = [self._diff_rho_ozaki_worker(ky) for ky in ky_list]
+                else:
+                    with multiprocessing.Pool(processes=processes) as pool:
+                        results = pool.map(self._diff_rho_ozaki_worker, ky_list)
             else:
                 raise ValueError(f"Unsupported method '{method}' for diff_rho_poisson")
         finally:
@@ -843,20 +853,12 @@ class GreensFunction:
         # Promote cache to shared proxy for multiprocessing duration
         _mgr = self._ensure_shared_cache(processes)
         try:
-            # Fallback to serial execution if only one k-point or one process
-            if processes <= 1:
+            if processes <= 1 or len(self.k_space) == 1:
                 print("Running in serial mode (1 k-point or 1 process).")
-                pool = multiprocessing.Pool(processes=1)
-            else:
-                print(f"Running in parallel mode with {processes} processes.")
-                pool = multiprocessing.Pool(processes=processes)
-
-            with pool:
                 if method == 'gauss_fermi':
                     self._worker_params['Ec'] = Ec
-                    results = pool.map(self._gauss_fermi_worker, self.k_space)
+                    results = [self._gauss_fermi_worker(ky) for ky in self.k_space]
                 elif method == 'ozaki_cfr':
-                    # Store Ozaki params (poles/residues cached per cutoff & temperature)
                     if force_recompute_ozaki:
                         try:
                             get_ozaki_poles_residues.cache_clear()
@@ -866,8 +868,8 @@ class GreensFunction:
                     self._worker_params['Ec_array'] = self._Ec_array
                     self._worker_params['use_rgf'] = use_rgf
                     self._worker_params['self_energy_method'] = self_energy_method
-                    results = pool.map(self._ozaki_cfr_worker, self.k_space)
-                else: # uniform
+                    results = [self._ozaki_cfr_worker(ky) for ky in self.k_space]
+                else:
                     mu_min = np.min(self.V + self.Efn)
                     mu_max = np.max(self.V + self.Efn)
                     if conduction_only:
@@ -882,7 +884,40 @@ class GreensFunction:
                     else:
                         dE = 1.0
                     param_grid = list(product(E_list, self.k_space, [dE]))
-                    results = pool.map(self._uniform_worker, param_grid)
+                    results = [self._uniform_worker(p) for p in param_grid]
+            else:
+                print(f"Running in parallel mode with {processes} processes.")
+                with multiprocessing.Pool(processes=processes) as pool:
+                    if method == 'gauss_fermi':
+                        self._worker_params['Ec'] = Ec
+                        results = pool.map(self._gauss_fermi_worker, self.k_space)
+                    elif method == 'ozaki_cfr':
+                        if force_recompute_ozaki:
+                            try:
+                                get_ozaki_poles_residues.cache_clear()
+                            except Exception:
+                                pass
+                        self._worker_params['ozaki_cutoff'] = ozaki_cutoff
+                        self._worker_params['Ec_array'] = self._Ec_array
+                        self._worker_params['use_rgf'] = use_rgf
+                        self._worker_params['self_energy_method'] = self_energy_method
+                        results = pool.map(self._ozaki_cfr_worker, self.k_space)
+                    else:
+                        mu_min = np.min(self.V + self.Efn)
+                        mu_max = np.max(self.V + self.Efn)
+                        if conduction_only:
+                            E_start = float(np.min(self._Ec_array))
+                            E_end = E_start + 10.0
+                        else:
+                            E_start = mu_min - 2.0
+                            E_end = mu_max + 2.0
+                        E_list = np.linspace(E_start, E_end, num_points)
+                        if num_points > 1:
+                            dE = E_list[1] - E_list[0]
+                        else:
+                            dE = 1.0
+                        param_grid = list(product(E_list, self.k_space, [dE]))
+                        results = pool.map(self._uniform_worker, param_grid)
         finally:
             self._finalize_shared_cache(_mgr)
         
@@ -962,41 +997,33 @@ class GreensFunction:
         kT = self.ham.kbT_eV
         n_sites = self.ham.get_num_sites()
         Ec = self._worker_params['Ec']
-        try:
-            mu_avg = np.mean(self.V + self.Efn)
-        except:
-            print(self.Efn, self.V)
+        mu_avg = float(np.mean(self.V + self.Efn))
+        # Determine lower transform bound
         if self._worker_params.get('conduction_only', True):
-            if np.ndim(Ec) == 0 or (np.ndim(Ec) > 0 and np.size(Ec) == 1):
-                Ec_min = float(np.atleast_1d(Ec)[0])
-            else:
-                Ec_min = float(np.min(np.atleast_1d(Ec)))
+            Ec_vals = np.atleast_1d(Ec)
+            Ec_min = float(Ec_vals.min())
             x_min = (Ec_min - mu_avg) / kT
         else:
-            x_min = ( (mu_avg - 2.0) - mu_avg ) / kT
+            x_min = -2.0 / kT  # 2 eV below average
         x_max = 10.0
-        
         n_quad = 32
         x_points, weights = np.polynomial.legendre.leggauss(n_quad)
         x_scaled = 0.5 * (x_max - x_min) * x_points + 0.5 * (x_max + x_min)
         weights_scaled = weights * 0.5 * (x_max - x_min)
-        
-        ky_density = np.zeros(n_sites)
+        ky_density = np.zeros(n_sites, dtype=float)
         for x, w in zip(x_scaled, weights_scaled):
             E_ref = mu_avg + x * kT
-            # Use LDOS cache with current solver settings
             ldos_vector = self._get_ldos_cached(
                 E_ref, ky,
                 self_energy_method=self._worker_params['self_energy_method'],
                 use_rgf=self._worker_params['use_rgf']
             )
             if self._worker_params.get('conduction_only', True):
-                if np.ndim(Ec) == 0 or np.size(np.atleast_1d(Ec)) == 1:
-                    if E_ref < Ec_min:
+                if np.ndim(Ec) == 0 or np.size(Ec) == 1:
+                    if E_ref < float(np.atleast_1d(Ec)[0]):
                         continue
                 else:
                     ldos_vector = ldos_vector * (E_ref >= np.atleast_1d(Ec))
-            
             exp_arg = (E_ref - self.V - self.Efn) / kT
             exp_arg_clipped = np.clip(exp_arg, -700, 700)
             if self.boltzmann:
@@ -1005,11 +1032,9 @@ class GreensFunction:
                 fermi_vector = np.where(exp_arg_clipped > 35, 0.0,
                                         np.where(exp_arg_clipped < -35, 1.0,
                                                  1.0 / (1.0 + np.exp(exp_arg_clipped))))
-            
-            ky_density += w * ldos_vector * fermi_vector * kT
-            
+            ky_density += w * ldos_vector * fermi_vector
+        ky_density *= kT  # Jacobian dE = kT dx
         return ky_density
-
     def _diff_rho_ozaki_worker(self, ky):
         """Per-k worker for dn/dV using Ozaki CFR derivative with LDOS cache.
         Returns vector (n_sites,).
@@ -1024,8 +1049,6 @@ class GreensFunction:
         self_energy_method = params['self_energy_method']
         deriv_vec = np.zeros_like(V_vec, dtype=float)
         for E in self.energy_grid:
-            if Ec is not None and E < Ec:
-                continue
             ldos = self._get_ldos_cached(E, ky, self_energy_method=self_energy_method, use_rgf=use_rgf)
             dfdx_abs = fermi_derivative_cfr_abs(np.array([E]), V_vec, Efn_vec, poles, residues, kT)
             deriv_vec += ldos * (dfdx_abs / kT) * self.dE
@@ -1168,13 +1191,7 @@ class GreensFunction:
     def fermi_energy(self, V: np.ndarray, lower_bound=None, upper_bound=None, Ec=0, verbose=False,
                         f_tol=None, get_n_kwargs=None, allow_unbracketed=True,
                         plateau_f_tol=1e-8, auto_shrink_gap=True):
-        """Solve per-site quasi-Fermi level using Chandrupatla.
 
-        mode: 'inconsistent' (legacy) uses full lesser density vs conduction-only get_n.
-              'consistent' computes target density with get_n at midpoint so both sides match method.
-        f_tol: residual tolerance on |get_n - target| for acceptance; larger residuals -> NaN.
-        get_n_kwargs: dict passed to get_n (e.g. {'method':'gauss_fermi'}).
-        """
         V = np.atleast_1d(V).astype(float)
         if not isinstance(lower_bound, np.ndarray):
             lower_bound = np.full_like(V, -1.0, dtype=float)
@@ -1182,14 +1199,16 @@ class GreensFunction:
             upper_bound = np.full_like(V, 2.0, dtype=float)
         if get_n_kwargs is None:
             get_n_kwargs = {}
+        get_n_kwargs['processes'] = 1
+        get_n_kwargs.setdefault('method', 'ozaki_cfr')
 
-        # Precompute target total density once (all states) at reference Efn=0
-        target_density = self.compute_charge_density()
+        with self.serial_mode():
 
-        # Optional auto gap detection: if DOS ~0 across bounds treat midpoint as solution
+            target_density = self.compute_charge_density()
+
         if auto_shrink_gap:
-            # Sample summed DOS over current energy grid once
-            ldos_mat = self.build_ldos_matrix(workers=1, verbose=False)
+            with self.serial_mode():
+                ldos_mat = self.build_ldos_matrix(workers=1, verbose=False)
             dos_sum = ldos_mat.sum(axis=1)
             # crude energy window covering [lower_bound.min, upper_bound.max]
             E_min = float(np.min(lower_bound))
@@ -1202,7 +1221,9 @@ class GreensFunction:
                     return mid
 
         def func(x):
-            return self.get_n(V=V, Efn=x, conduction_only=False) - target_density
+
+            with self.serial_mode():
+                return self.get_n(V=V, Efn=x, conduction_only=False, **get_n_kwargs) - target_density
 
         roots = chandrupatla(func, lower_bound, upper_bound, verbose=verbose,
                               allow_unbracketed=allow_unbracketed, f_tol=f_tol,
