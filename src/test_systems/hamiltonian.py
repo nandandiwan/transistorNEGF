@@ -42,7 +42,7 @@ class Hamiltonian:
         
         # one d
         self.num_orbitals = 1
-        self.N = 20
+        self.N = 150
         # C_ox
         self.C_ox = 2e-3
         # gate width

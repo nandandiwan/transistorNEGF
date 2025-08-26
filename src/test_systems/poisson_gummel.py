@@ -150,22 +150,21 @@ class CoupledNEGFPoisson:
         """
         if n_sites.size != self.V_func.x.array.size:
             raise ValueError("Site density size mismatch with FEM DOF count (non-uniform mapping not implemented).")
-        # Convert to concentration (#/m^3)
         n_conc = n_sites / self.site_volume_m3
         dn_dV_conc = dn_dV_sites / self.site_volume_m3
-        # rho = q (N_D - n)
         self.rho_func.x.array[:] = q * (self.N_D.x.array - n_conc)
-        # d rho / d V = -q * dn/dV
         self.drho_dV_func.x.array[:] = -q * dn_dV_conc
         self.rho_func.x.scatter_forward()
         self.drho_dV_func.x.scatter_forward()
 
     def _assemble_linear_system(self):
+        # Assemble linearized Poisson system: ε∇²V + ρ(V)=0 linearized around current V_old.
         V_old = self.V_func
         v = self.v_test
         u = self.u_trial
-        drho = self.drho_dV_func
-        rho = self.rho_func
+        drho = self.drho_dV_func  # dρ/dV
+        rho = self.rho_func       # ρ(V_old)
+        # Left: ε∇u·∇v + (dρ/dV) u v ; Right: (dρ/dV) V_old v - ρ v
         a_form = (self.eps * ufl.dot(ufl.grad(u), ufl.grad(v)) + drho * u * v) * ufl.dx
         L_form = (drho * V_old * v - rho * v) * ufl.dx
         A = fem.petsc.assemble_matrix(fem.form(a_form), bcs=self.bcs)
@@ -238,12 +237,13 @@ class CoupledNEGFPoisson:
             if hasattr(self.gf, 'clear_ozaki_cache'):
                 self.gf.clear_ozaki_cache()
             if hasattr(self.gf, 'ham') and hasattr(self.gf.ham, 'set_potential'):
-                self.gf.ham.set_potential(V_loc)
+                # Electron convention: onsite shift = -V (potential energy decreases where V>0)
+                self.gf.ham.set_potential(-V_loc)
 
             with getattr(self.gf, 'serial_mode', lambda: DummyContext())():
                 Ec_eff = Ec - V_loc if (conduction_only and dynamic_Ec_shift) else Ec
                 n_vec, dn_dV_vec = self._negf_density_and_derivative(V_loc, Ec_eff, Efn, method, derivative_method, ozaki_cutoff, conduction_only)
-            self._update_charge_functions(n_vec, dn_dV_vec)
+                self._update_charge_functions(n_vec, dn_dV_vec)
 
             A, b = self._assemble_linear_system()
             V_lin = self.V_func.copy()
@@ -309,7 +309,8 @@ class CoupledNEGFPoisson:
             if hasattr(self.gf, 'clear_ozaki_cache'):
                 self.gf.clear_ozaki_cache()
             if hasattr(self.gf, 'ham') and hasattr(self.gf.ham, 'set_potential'):
-                self.gf.ham.set_potential(V_loc)
+                # Maintain consistent electron convention (onsite shift = -V)
+                self.gf.ham.set_potential(-V_loc)
 
             # Optionally (and infrequently) recompute quasi-Fermi level; disabled by default to avoid PETSc signal issues
             if recompute_fermi and (it == 1 or (fermi_update_interval > 0 and it % fermi_update_interval == 0)):
@@ -337,7 +338,7 @@ class CoupledNEGFPoisson:
             try:
                 # Ensure BCs strictly enforced in final array
                 self._enforce_dirichlet(V_loc)
-                self.gf.ham.set_potential(V_loc)
+                self.gf.ham.set_potential(-V_loc)
             except Exception as e:
                 if verbose and self.comm.rank == 0:
                     print(f"[Gummel] Warning: failed to set Hamiltonian potential: {e}")

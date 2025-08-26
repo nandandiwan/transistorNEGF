@@ -751,6 +751,7 @@ class GreensFunction:
                 }
                 if processes <= 1 or len(ky_list) == 1:
                     print("Running diff_rho_poisson (ozaki_cfr) in serial mode.")
+                    # _diff_rho_ozaki_worker already returns +dn/dV; no extra sign
                     results = [self._diff_rho_ozaki_worker(ky) for ky in ky_list]
                 else:
                     with multiprocessing.Pool(processes=processes) as pool:
